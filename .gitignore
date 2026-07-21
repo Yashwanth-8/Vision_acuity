@@ -1,23 +1,8 @@
-# macOS
 .DS_Store
-
-# Python
 __pycache__/
-*.py[cod]
-*.pyo
-*.pyd
+*.pyc
 .pytest_cache/
-
-# Node / frontend
-node_modules/
-.next/
-out/
-dist/
-coverage/
-
-# Env
-.env
-.env.*
-
-# Logs
-*.log
+.venv/
+nadi_vision/frontend/node_modules/
+nadi_vision/frontend/.next/
+nadi_vision/frontend/out/
