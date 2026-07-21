@@ -7,6 +7,7 @@ Captures XRGB8888 frames, drops the X channel, and publishes:
 
 from __future__ import annotations
 
+import os
 from queue import Empty, Full, Queue
 import threading
 import time
@@ -152,3 +153,94 @@ class CameraWorker:
                 pass
         if self._cv_cap is not None:
             self._cv_cap.release()
+
+
+class BridgeCameraWorker:
+    """Camera worker that reads externally produced JPEG frames from disk.
+
+    This mode is intended for split-interpreter deployments on Raspberry Pi:
+    - system Python (3.13) process captures frames via Picamera2
+    - backend Python (3.11) process reads those frames for MediaPipe inference
+    """
+
+    def __init__(
+        self,
+        frame_queue: Queue,
+        *,
+        frame_path: str = "/tmp/nadi_bridge/latest.jpg",
+        poll_hz: float = 30.0,
+    ) -> None:
+        self._frame_queue = frame_queue
+        self._frame_path = frame_path
+        self._period_s = 1.0 / max(1.0, poll_hz)
+
+        self._stop_event = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+        self._preview_lock = threading.Lock()
+        self._latest_preview_jpeg: Optional[bytes] = None
+        self._last_mtime_ns: Optional[int] = None
+
+    def _push_detect_frame(self, frame: np.ndarray) -> None:
+        detect_frame = cv2.resize(frame, (DETECT_WIDTH, DETECT_HEIGHT), interpolation=cv2.INTER_AREA)
+        try:
+            self._frame_queue.put_nowait(detect_frame)
+        except Full:
+            try:
+                self._frame_queue.get_nowait()
+            except Empty:
+                pass
+            try:
+                self._frame_queue.put_nowait(detect_frame)
+            except Full:
+                pass
+
+    def _run(self) -> None:
+        while not self._stop_event.is_set():
+            loop_start = time.monotonic()
+            try:
+                st = os.stat(self._frame_path)
+                if self._last_mtime_ns is not None and st.st_mtime_ns == self._last_mtime_ns:
+                    self._stop_event.wait(self._period_s)
+                    continue
+                self._last_mtime_ns = st.st_mtime_ns
+
+                frame = cv2.imread(self._frame_path)
+                if frame is None:
+                    self._stop_event.wait(0.03)
+                    continue
+
+                self._push_detect_frame(frame)
+                ok, encoded = cv2.imencode(
+                    ".jpg",
+                    frame,
+                    [int(cv2.IMWRITE_JPEG_QUALITY), int(PREVIEW_QUALITY)],
+                )
+                if ok:
+                    with self._preview_lock:
+                        self._latest_preview_jpeg = encoded.tobytes()
+            except FileNotFoundError:
+                pass
+            except Exception:
+                pass
+
+            elapsed = time.monotonic() - loop_start
+            remaining = self._period_s - elapsed
+            if remaining > 0:
+                self._stop_event.wait(remaining)
+
+    def get_latest_preview_jpeg(self) -> Optional[bytes]:
+        with self._preview_lock:
+            return self._latest_preview_jpeg
+
+    def start(self) -> None:
+        if self._thread and self._thread.is_alive():
+            return
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._run, name="nadi-camera-bridge", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=3.0)

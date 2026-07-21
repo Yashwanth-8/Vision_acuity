@@ -18,6 +18,25 @@ cd backend
 python3 main.py
 ```
 
+### Backend (Split Interpreter on Pi 4)
+
+Use this mode when MediaPipe must run on Python 3.11 venv, while camera capture
+must run on system Python 3.13 with Picamera2.
+
+Terminal 1 (system Python 3.13 camera bridge producer):
+```bash
+cd scripts
+/usr/bin/python3 camera_bridge_producer.py --out /tmp/nadi_bridge/latest.jpg --width 1280 --height 720 --fps 30
+```
+
+Terminal 2 (Python 3.11 backend + MediaPipe):
+```bash
+cd backend
+export NADI_CAMERA_MODE=bridge
+export NADI_BRIDGE_FRAME_PATH=/tmp/nadi_bridge/latest.jpg
+python main.py
+```
+
 ### Frontend
 ```bash
 cd frontend
@@ -36,3 +55,26 @@ python3 perf_validate.py --benchmark-json real_benchmark_results.json
 - Run full OD/OS flow with backend + frontend together.
 - Capture CPU/memory headroom during a full session.
 - Confirm no OOM and stable frame processing under kiosk load.
+
+## Pi 4 Quick Verification
+
+1. Verify Python environments:
+```bash
+/usr/bin/python3 -c "import libcamera, picamera2; print('system camera stack OK')"
+python -c "import mediapipe, cv2; print('venv mediapipe stack OK')"
+```
+
+2. Verify backend websocket is live:
+```bash
+python - <<'PY'
+import asyncio, json, websockets
+
+async def main():
+	async with websockets.connect('ws://127.0.0.1:8765') as ws:
+		msg = await ws.recv()
+		payload = json.loads(msg)
+		print('WS OK', sorted(payload.keys()))
+
+asyncio.run(main())
+PY
+```

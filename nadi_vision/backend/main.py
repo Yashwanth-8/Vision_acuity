@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import multiprocessing
+import os
 from queue import Queue
 import signal
 import threading
@@ -23,7 +24,7 @@ from backend.config import (
     FRAME_QUEUE_MAXSIZE,
     INTEGRITY_QUEUE_MAXSIZE,
 )
-from backend.sensors.camera import CameraWorker
+from backend.sensors.camera import BridgeCameraWorker, CameraWorker
 from backend.sensors.ultrasonic import UltrasonicWorker
 from backend.server.ws_server import WSServer
 from backend.vision.face_detection import FaceInferenceWorker
@@ -41,7 +42,17 @@ async def _run_backend() -> None:
     frame_queue: multiprocessing.Queue = multiprocessing.Queue(maxsize=FRAME_QUEUE_MAXSIZE)
     attention_queue: multiprocessing.Queue = multiprocessing.Queue(maxsize=ATTENTION_QUEUE_MAXSIZE)
 
-    camera_worker = CameraWorker(frame_queue=frame_queue)
+    camera_mode = os.getenv("NADI_CAMERA_MODE", "native").strip().lower()
+    if camera_mode == "bridge":
+        bridge_path = os.getenv("NADI_BRIDGE_FRAME_PATH", "/tmp/nadi_bridge/latest.jpg")
+        bridge_hz = float(os.getenv("NADI_BRIDGE_POLL_HZ", "30"))
+        camera_worker = BridgeCameraWorker(
+            frame_queue=frame_queue,
+            frame_path=bridge_path,
+            poll_hz=bridge_hz,
+        )
+    else:
+        camera_worker = CameraWorker(frame_queue=frame_queue)
     ultrasonic_worker = UltrasonicWorker(distance_queue=distance_queue)
     inference_worker = FaceInferenceWorker(
         frame_queue=frame_queue,
