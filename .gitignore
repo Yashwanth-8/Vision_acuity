@@ -1,0 +1,23 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Node / frontend
+node_modules/
+.next/
+out/
+dist/
+coverage/
+
+# Env
+.env
+.env.*
+
+# Logs
+*.log
