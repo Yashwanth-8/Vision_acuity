@@ -27,7 +27,6 @@ def _state(
         head_yaw_deg=head_yaw_deg,
         left_eye_open=left_eye_open,
         right_eye_open=right_eye_open,
-        face_box_area_px=10_000,
     )
 
 
@@ -228,18 +227,6 @@ def test_normal_response_not_fast_flagged() -> None:
     assert IntegrityFlag.FAST_ANSWER not in flags
 
 
-def test_distance_unstable_never_triggers_active_pause() -> None:
-    monitor, clock, paused_flags, _ = _monitor_with_clock()
-
-    monitor.update_distance(0.50)
-    clock.advance(0.2)
-    monitor.update_distance(0.65)
-    clock.advance(0.2)
-    monitor.update_distance(0.45)
-
-    assert IntegrityFlag.DISTANCE_UNSTABLE not in paused_flags
-
-
 def test_distance_moved_reanchors_and_resumes_when_still() -> None:
     monitor, clock, paused_flags, resume_events = _monitor_with_clock()
     monitor.mark_trial_start_distance(0.50)
@@ -259,3 +246,29 @@ def test_distance_moved_reanchors_and_resumes_when_still() -> None:
     monitor.update_distance(0.70)
     assert resume_events == [True]
     assert not monitor.is_paused()
+
+
+def test_soft_warning_triggers_before_face_loss_pause() -> None:
+    monitor, clock, paused_flags, _ = _monitor_with_clock()
+
+    monitor.update_attention(_state(face_detected=False, face_count=0))
+    clock.advance(0.6)
+    monitor.update_attention(_state(face_detected=False, face_count=0))
+    assert monitor.is_warned()
+    assert paused_flags == []
+
+    clock.advance(1.5)
+    monitor.update_attention(_state(face_detected=False, face_count=0))
+    assert IntegrityFlag.FACE_LOSS in paused_flags
+
+
+def test_soft_warning_clears_when_condition_recovers() -> None:
+    monitor, clock, _, _ = _monitor_with_clock()
+
+    monitor.update_attention(_state(face_detected=False, face_count=0))
+    clock.advance(0.6)
+    monitor.update_attention(_state(face_detected=False, face_count=0))
+    assert monitor.is_warned()
+
+    monitor.update_attention(_state(face_detected=True, face_count=1))
+    assert not monitor.is_warned()

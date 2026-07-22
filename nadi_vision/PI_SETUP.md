@@ -2,7 +2,7 @@
 
 Fresh clone → working kiosk, step by step.
 
-**Target:** Raspberry Pi 4 (4 GB), Pi OS Bookworm (64-bit), CSI camera, HC-SR04 on BCM 17/27.
+**Target:** Raspberry Pi 4 (4 GB), Pi OS Bookworm (64-bit), CSI camera, HC-SR04 on BCM 23/24.
 
 ---
 
@@ -89,18 +89,19 @@ cd ..
 # Test CSI camera is visible
 rpicam-hello --timeout 2000
 
-# Test HC-SR04 GPIO (BCM 17 = trigger, BCM 27 = echo)
+# Test HC-SR04 GPIO (BCM 23 = trigger, BCM 24 = echo)
 /usr/bin/python3 - <<'EOF'
 from gpiozero import DistanceSensor
-s = DistanceSensor(echo=27, trigger=17)
+s = DistanceSensor(echo=24, trigger=23)
 print(f"Distance: {s.distance * 100:.1f} cm")
 s.close()
 EOF
 ```
 
 If the GPIO pins differ on your enclosure, update these defaults in
-`backend/scoring/constants.py` → `UltrasonicWorker` trigger/echo pin args,
-or pass them explicitly in `backend/main.py`.
+`backend/sensors/ultrasonic.py` (UltrasonicWorker constructor),
+or pass custom `trigger_pin`/`echo_pin` when creating UltrasonicWorker in
+`backend/main.py`.
 
 ---
 
@@ -307,7 +308,16 @@ the actual screen with calipers and hard-code the value in the device manifest.
 
 ---
 
-## 11. Troubleshooting
+## 11. Runtime behavior notes (current build)
+
+- Distance is ultrasonic-only and filtered by range gate + MAD outlier rejection + EMA smoothing.
+- Tumbling E size is fixed per trial from trial-start distance to reduce visual jitter.
+- Fellow-eye enforcement uses fused hand-eye overlap and sclera suppression with hysteresis.
+- Integrity flow is two-tier: non-blocking warning first, then hard hold if sustained.
+
+---
+
+## 12. Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
@@ -317,5 +327,5 @@ the actual screen with calipers and hard-code the value in the device manifest.
 | `mediapipe` import error | Wrong Python interpreter | Confirm `uv run python -c "import mediapipe"` works |
 | WebSocket not connecting from browser | App service not running or wrong port | Check `sudo systemctl status nadivision-app` |
 | Preview image not loading in browser | Camera service MJPEG server not up | Visit `http://localhost:8766/preview` directly |
-| HC-SR04 reads 0 or error | Wrong GPIO pins | Check BCM 17 (trig) / 27 (echo) wiring; update pins in `main.py` if different |
+| HC-SR04 reads 0 or error | Wrong GPIO pins | Check BCM 23 (trig) / 24 (echo) wiring; update UltrasonicWorker pins if different |
 | `gpiozero` not found | Missing system package | `sudo apt install -y python3-gpiozero python3-lgpio` |

@@ -1,9 +1,10 @@
-"""HC-SR04 ultrasonic sensor reader with Median(3) + EMA(alpha=0.7) filtering."""
+"""HC-SR04 ultrasonic sensor reader with MAD filtering + EMA smoothing."""
 
 from __future__ import annotations
 
 from collections import deque
 from queue import Empty, Full, Queue
+import statistics
 import threading
 import time
 from typing import Callable, Optional
@@ -11,7 +12,8 @@ from typing import Callable, Optional
 from backend.config import DISTANCE_QUEUE_MAXSIZE
 from backend.scoring.constants import (
     EMA_ALPHA,
-    MEDIAN_WINDOW,
+    MAD_OUTLIER_K,
+    MAD_WINDOW,
     SENSOR_MAX_M,
     SENSOR_MIN_M,
     SENSOR_TO_EYE_OFFSET_M,
@@ -28,7 +30,7 @@ class UltrasonicWorker:
     """Background distance polling worker.
 
     Raw pipeline:
-    raw reading -> validate range -> median(3) -> EMA(0.7) -> corrected distance.
+    raw reading -> validate range -> MAD outlier gate -> EMA -> corrected distance.
     """
 
     def __init__(
@@ -50,7 +52,7 @@ class UltrasonicWorker:
         self._thread: Optional[threading.Thread] = None
         self._sensor = None
 
-        self._raw_window: deque[float] = deque(maxlen=MEDIAN_WINDOW)
+        self._raw_window: deque[float] = deque(maxlen=MAD_WINDOW)
         self._ema_value: Optional[float] = None
         self.latest_distance_m: Optional[float] = None
 
@@ -80,15 +82,26 @@ class UltrasonicWorker:
             return None
 
         self._raw_window.append(raw_distance)
-        if len(self._raw_window) < MEDIAN_WINDOW:
+        if len(self._raw_window) < MAD_WINDOW:
             return None
 
-        ordered = sorted(self._raw_window)
-        median_distance = ordered[len(ordered) // 2]
+        median_distance = statistics.median(self._raw_window)
+        abs_dev = [abs(v - median_distance) for v in self._raw_window]
+        mad = statistics.median(abs_dev)
+
+        # Reject short spikes before EMA to avoid spreading outliers over time.
+        # When MAD is zero (steady window), use a fixed 8 cm guard band.
+        outlier_limit = (MAD_OUTLIER_K * mad) if mad > 0 else 0.08
+        if abs(raw_distance - median_distance) > outlier_limit:
+            if self._ema_value is None:
+                return None
+            corrected = self._ema_value + SENSOR_TO_SCREEN_OFFSET_M + SENSOR_TO_EYE_OFFSET_M
+            return max(SENSOR_MIN_M, min(SENSOR_MAX_M, corrected))
+
         if self._ema_value is None:
-            self._ema_value = median_distance
+            self._ema_value = raw_distance
         else:
-            self._ema_value = (EMA_ALPHA * median_distance) + ((1.0 - EMA_ALPHA) * self._ema_value)
+            self._ema_value = (EMA_ALPHA * raw_distance) + ((1.0 - EMA_ALPHA) * self._ema_value)
 
         corrected = self._ema_value + SENSOR_TO_SCREEN_OFFSET_M + SENSOR_TO_EYE_OFFSET_M
         return max(SENSOR_MIN_M, min(SENSOR_MAX_M, corrected))

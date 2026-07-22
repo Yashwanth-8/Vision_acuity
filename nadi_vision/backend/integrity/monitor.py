@@ -11,12 +11,13 @@ from typing import Callable, List, Literal, Optional
 
 from backend.scoring.constants import (
     DISTANCE_DRIFT_TOLERANCE_M,
-    DISTANCE_STABILITY_HOLD_S,
-    DISTANCE_STABILITY_WINDOW_M,
     FACE_LOSS_DEBOUNCE_S,
+    FACE_LOSS_WARN_S,
     FAST_ANSWER_THRESHOLD_MS,
     FELLOW_EYE_DEBOUNCE_S,
+    FELLOW_EYE_WARN_S,
     GAZE_OFF_DEBOUNCE_S,
+    GAZE_WARN_S,
     GAZE_YAW_THRESHOLD_DEG,
     RESUME_STABILITY_HOLD_S,
 )
@@ -33,7 +34,6 @@ class IntegrityFlag(Enum):
     DISTANCE_FACE_MISMATCH = "distance_face_mismatch"
     SCRIPTED_TIMING_SUSPECTED = "scripted_timing_suspected"
     DISTANCE_DRIFT_MID_TRIAL = "distance_drift_mid_trial"
-    DISTANCE_UNSTABLE = "distance_unstable"
     DISTANCE_MOVED = "distance_moved"
 
 
@@ -52,7 +52,6 @@ class AttentionState:
     head_yaw_deg: float
     left_eye_open: bool
     right_eye_open: bool
-    face_box_area_px: int
 
 
 class DebounceTimer:
@@ -97,16 +96,16 @@ class IntegrityMonitor:
         self._current_pause_event: Optional[PauseEvent] = None
 
         self._face_loss_timer = DebounceTimer(FACE_LOSS_DEBOUNCE_S)
+        self._face_loss_warn_timer = DebounceTimer(FACE_LOSS_WARN_S)
         self._gaze_timer = DebounceTimer(GAZE_OFF_DEBOUNCE_S)
+        self._gaze_warn_timer = DebounceTimer(GAZE_WARN_S)
         self._fellow_eye_timer = DebounceTimer(FELLOW_EYE_DEBOUNCE_S)
+        self._fellow_eye_warn_timer = DebounceTimer(FELLOW_EYE_WARN_S)
         self._resume_timer = DebounceTimer(RESUME_STABILITY_HOLD_S)
-        self._distance_stability_timer = DebounceTimer(DISTANCE_STABILITY_HOLD_S)
 
         self._fullscreen_ok = True
-
-        # Distance tracking
-        self._distance_anchor: Optional[float] = None
         self._trial_start_distance: Optional[float] = None
+        self._active_warn_flags: set[IntegrityFlag] = set()
 
         self._response_directions: List[str] = []
         self._response_times_ms: List[float] = []
@@ -125,11 +124,16 @@ class IntegrityMonitor:
             return f"Cover your {fellow_side} eye with your hand to continue"
         if flag == IntegrityFlag.FULLSCREEN_EXIT:
             return "Please return to fullscreen"
-        if flag == IntegrityFlag.DISTANCE_UNSTABLE:
-            return "Hold still while we set your test distance"
         if flag == IntegrityFlag.DISTANCE_MOVED:
             return "Please return to position and hold still"
         return "Integrity condition triggered"
+
+    def _trigger_warn(self, flag: IntegrityFlag) -> None:
+        self._active_warn_flags.add(flag)
+
+    def _clear_warn_flag(self, flag: IntegrityFlag) -> None:
+        if flag in self._active_warn_flags:
+            self._active_warn_flags.remove(flag)
 
     def _trigger_pause(self, flag: IntegrityFlag, now: float) -> None:
         self._active_pause_flags.add(flag)
@@ -154,13 +158,25 @@ class IntegrityMonitor:
         else:
             self._clear_pause_flag(IntegrityFlag.MULTIPLE_FACES)
 
-        face_loss = self._face_loss_timer.update(not state.face_detected, now)
+        face_violation = not state.face_detected
+        if self._face_loss_warn_timer.update(face_violation, now):
+            self._trigger_warn(IntegrityFlag.FACE_LOSS)
+        else:
+            self._clear_warn_flag(IntegrityFlag.FACE_LOSS)
+
+        face_loss = self._face_loss_timer.update(face_violation, now)
         if face_loss:
             self._trigger_pause(IntegrityFlag.FACE_LOSS, now)
         else:
             self._clear_pause_flag(IntegrityFlag.FACE_LOSS)
 
-        gaze_off = self._gaze_timer.update(abs(state.head_yaw_deg) > GAZE_YAW_THRESHOLD_DEG, now)
+        gaze_violation = abs(state.head_yaw_deg) > GAZE_YAW_THRESHOLD_DEG
+        if self._gaze_warn_timer.update(gaze_violation, now):
+            self._trigger_warn(IntegrityFlag.GAZE_OFF_SCREEN)
+        else:
+            self._clear_warn_flag(IntegrityFlag.GAZE_OFF_SCREEN)
+
+        gaze_off = self._gaze_timer.update(gaze_violation, now)
         if gaze_off:
             self._trigger_pause(IntegrityFlag.GAZE_OFF_SCREEN, now)
         else:
@@ -169,32 +185,27 @@ class IntegrityMonitor:
         fellow_eye_open = state.left_eye_open if self.tested_eye == "OD" else state.right_eye_open
         # Only enforce fellow-eye check once session.start has been received
         if self._fellow_eye_check_enabled:
+            if self._fellow_eye_warn_timer.update(fellow_eye_open, now):
+                self._trigger_warn(IntegrityFlag.FELLOW_EYE_OPEN)
+            else:
+                self._clear_warn_flag(IntegrityFlag.FELLOW_EYE_OPEN)
+
             fellow_flag = self._fellow_eye_timer.update(fellow_eye_open, now)
             if fellow_flag:
                 self._trigger_pause(IntegrityFlag.FELLOW_EYE_OPEN, now)
             else:
                 self._clear_pause_flag(IntegrityFlag.FELLOW_EYE_OPEN)
         else:
+            self._clear_warn_flag(IntegrityFlag.FELLOW_EYE_OPEN)
             self._clear_pause_flag(IntegrityFlag.FELLOW_EYE_OPEN)
+            self._fellow_eye_warn_timer.reset()
             self._fellow_eye_timer.reset()
 
         self._update_resume_state(now)
 
     def update_distance(self, distance_m: float) -> None:
-        """Track distance and trial-level drift without sticky stability holds."""
+        """Track trial-level drift distance holds."""
         now = self._time_fn()
-
-        # Keep a rolling anchor for informational stability, but do not pause the
-        # session on micro-variation. This avoids long/sticky DISTANCE_UNSTABLE holds.
-        if self._distance_anchor is None:
-            self._distance_anchor = distance_m
-
-        within_window = abs(distance_m - self._distance_anchor) <= DISTANCE_STABILITY_WINDOW_M
-        if not within_window:
-            # Patient moved; reset anchor
-            self._distance_anchor = distance_m
-        self._distance_stability_timer.update(within_window, now)
-        self._clear_pause_flag(IntegrityFlag.DISTANCE_UNSTABLE)
 
         # Trial-level drift: hold if moved beyond tolerance since trial started
         if self._trial_start_distance is not None:
@@ -212,22 +223,6 @@ class IntegrityMonitor:
         """Record the distance at the start of a trial for drift detection."""
         self._trial_start_distance = distance_m
 
-    def prime_distance(self, distance_m: float) -> None:
-        """Pre-seed the distance anchor so stability is satisfied immediately.
-
-        Call at session.start with the current sensor reading so the patient
-        does not see 'Hold still while we set your test distance' at the
-        beginning of every session when they are already seated and still.
-        The stability timer is fast-forwarded to its threshold so the very
-        next update_distance call clears any DISTANCE_UNSTABLE hold.
-        """
-        self._distance_anchor = distance_m
-        now = self._time_fn()
-        # Fast-forward the timer to appear already satisfied
-        self._distance_stability_timer._start = (
-            now - self._distance_stability_timer.threshold_s
-        )
-
     def set_fellow_eye_check_enabled(self, enabled: bool) -> None:
         """Enable or disable the fellow-eye occlusion hold.
 
@@ -237,6 +232,8 @@ class IntegrityMonitor:
         """
         self._fellow_eye_check_enabled = enabled
         if not enabled:
+            self._clear_warn_flag(IntegrityFlag.FELLOW_EYE_OPEN)
+            self._fellow_eye_warn_timer.reset()
             self._fellow_eye_timer.reset()
             self._clear_pause_flag(IntegrityFlag.FELLOW_EYE_OPEN)
 
@@ -244,8 +241,10 @@ class IntegrityMonitor:
         self._fullscreen_ok = is_fullscreen
         now = self._time_fn()
         if not is_fullscreen:
+            self._trigger_warn(IntegrityFlag.FULLSCREEN_EXIT)
             self._trigger_pause(IntegrityFlag.FULLSCREEN_EXIT, now)
         else:
+            self._clear_warn_flag(IntegrityFlag.FULLSCREEN_EXIT)
             self._clear_pause_flag(IntegrityFlag.FULLSCREEN_EXIT)
             self._update_resume_state(now)
 
@@ -262,6 +261,9 @@ class IntegrityMonitor:
                 self._current_pause_event.duration_s = now - self._current_pause_event.start_time
                 self._current_pause_event = None
             self._on_resume()
+
+    def is_warned(self) -> bool:
+        return bool(self._active_warn_flags) and not self._paused
 
     def record_response(
         self,

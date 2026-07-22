@@ -103,12 +103,11 @@ class WSServer:
         *,
         distance_queue: Any,
         attention_queue: Any,
-        integrity_queue: Any,
-        preview_provider: Any = None,   # unused — camera service owns preview
+        single_eye_flag: Any,
     ) -> None:
         self._distance_queue = distance_queue
         self._attention_queue = attention_queue
-        self._integrity_queue = integrity_queue
+        self._single_eye_flag = single_eye_flag
 
         self._stop_event = asyncio.Event()
         self._server: Optional[Any] = None
@@ -172,12 +171,10 @@ class WSServer:
             eye=eye,  # type: ignore[arg-type]
             correction=correction,  # type: ignore[arg-type]
         )
+        self._single_eye_flag.value = 1
         if self._last_distance:
             sess.trial_start_distance = self._last_distance
             self._integrity_monitor.mark_trial_start_distance(self._last_distance)
-            # Pre-seed distance so the 'Hold still' overlay does not fire
-            # immediately at session start when the patient is already still.
-            self._integrity_monitor.prime_distance(self._last_distance)
         self._session = sess
 
     async def _handle_trial_answer(self, msg: Dict[str, Any]) -> None:
@@ -230,6 +227,7 @@ class WSServer:
         self._integrity_monitor.mark_trial_start_distance(distance_m)
 
     async def _emit_report(self, sess: _ActiveSession) -> None:
+        self._single_eye_flag.value = 0
         result = sess.acuity.get_result()
         payload = self._report_gen.build({
             "sessions": [result],
@@ -287,6 +285,7 @@ class WSServer:
             "distance_m": dist,
             "hold": {
                 "paused": paused,
+                "warning": self._integrity_monitor.is_warned(),
                 "message": self._hold_message if paused else None,
             },
             "attention": {
@@ -305,7 +304,8 @@ class WSServer:
             return state
 
         logmar = sess.acuity.get_current_logmar()
-        e_mm = _e_height_mm(dist or 1.0, logmar) if dist else 0.0
+        size_distance_m = sess.trial_start_distance or dist or 1.0
+        e_mm = _e_height_mm(size_distance_m, logmar)
 
         state.update({
             "session_status": "active",
@@ -333,17 +333,12 @@ class WSServer:
             new_attn = self._drain_queue(self._attention_queue, None)
             if new_attn:
                 self._last_attention = new_attn
-                bbox = self._last_attention.get("bbox") or {}
-                area = int(
-                    max(0.0, float(bbox.get("w", 0)) * float(bbox.get("h", 0)))
-                )
                 attn = AttentionState(
                     face_detected=bool(self._last_attention.get("face_detected", False)),
                     face_count=int(self._last_attention.get("num_faces", 0)),
                     head_yaw_deg=float(self._last_attention.get("head_yaw_deg", 0.0)),
                     left_eye_open=bool(self._last_attention.get("left_eye_open", False)),
                     right_eye_open=bool(self._last_attention.get("right_eye_open", False)),
-                    face_box_area_px=area,
                 )
                 self._integrity_monitor.update_attention(attn)
 
@@ -374,6 +369,7 @@ class WSServer:
 
     async def stop(self) -> None:
         self._stop_event.set()
+        self._single_eye_flag.value = 0
 
         if self._broadcast_task:
             self._broadcast_task.cancel()

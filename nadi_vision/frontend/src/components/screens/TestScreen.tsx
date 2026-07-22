@@ -88,6 +88,17 @@ function HoldOverlay({ message, distanceM }: { message: string; distanceM: numbe
     );
 }
 
+function WarnIndicator() {
+    return (
+        <motion.div
+            className="pointer-events-none fixed inset-3 rounded-2xl border-2 border-warning/70 z-40"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: [0.25, 0.8, 0.25] }}
+            transition={{ duration: 1.0, repeat: Infinity, ease: "easeInOut" }}
+        />
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
@@ -201,6 +212,7 @@ export default function TestScreen() {
     // ------------------------------------------------------------------
     const sess = sessionState;
     const isHeld = sess?.hold.paused ?? false;
+    const isWarned = sess?.hold.warning ?? false;
     const holdMsg = sess?.hold.message ?? "";
     const direction = sess?.direction as EDirection | undefined;
     const eHeightMm = sess?.e_height_mm ?? 0;
@@ -232,6 +244,11 @@ export default function TestScreen() {
                 {isHeld && (
                     <HoldOverlay message={holdMsg} distanceM={distanceM} />
                 )}
+            </AnimatePresence>
+
+            {/* ── Soft warning indicator (non-blocking) ── */}
+            <AnimatePresence>
+                {!isHeld && isWarned && <WarnIndicator />}
             </AnimatePresence>
 
             {/* ── Status bar ── */}

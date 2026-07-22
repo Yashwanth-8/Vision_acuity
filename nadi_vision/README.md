@@ -1,133 +1,90 @@
 # NadiVision
 
-Clinical-grade visual acuity screening device running on Raspberry Pi 4.  
-Tumbling E optotype · ETDRS 14-line scoring · HC-SR04 distance · MediaPipe face/eye detection.
+Visual acuity screening stack for Raspberry Pi 4.
+Current build uses backend-owned scoring/integrity with a split-interpreter camera architecture.
 
-> **Not a medical device.** Results require review by a Registered Medical Practitioner before any clinical use.
-
----
+Not a medical device. Results must be reviewed by a qualified clinician.
 
 ## Architecture
 
 ```
-nadivision-camera.service   (system Python + Picamera2)
-  → shared memory ring (3 × 320×240 RGB slots)
-  → Unix-domain socket  →  nadivision-app.service  (uv Python 3.11 + MediaPipe)
-  → HTTP MJPEG :8766    →  kiosk frontend
+nadivision-camera.service (system Python + Picamera2)
+  -> shared memory ring (3 x 320x240 RGB)
+  -> Unix domain socket metadata (/run/nadivision/frames.sock)
+  -> MJPEG preview HTTP (:8766)
 
-nadivision-app.service
-  → WebSocket :8765  ↔  kiosk frontend
-  → HC-SR04 @ 17 Hz
-  → IntegrityMonitor (face loss · fellow-eye · distance · gaze)
-  → AcuitySession (scoring · report)
+nadivision-app.service (uv Python 3.11)
+  -> HC-SR04 distance worker (~17 Hz)
+  -> MediaPipe FaceDetection (6 Hz)
+  -> MediaPipe Hands (3 Hz, OD/OS test phase only)
+  -> IntegrityMonitor (warn + pause tiers)
+  -> AcuitySession scoring engine
+  -> WebSocket session server (:8765)
+
+frontend (Next.js)
+  -> display-only test UI (no scoring logic)
+  -> consumes session.state and report.ready
 ```
 
-## Quick Start on Pi
+## Current Behavior
 
-See [PI_SETUP.md](PI_SETUP.md) for full installation and configuration steps.
+- Distance is ultrasonic-only.
+- Distance filtering is range gate -> MAD outlier rejection -> EMA smoothing.
+- Optotype size is fixed per trial using trial-start distance to avoid mid-trial size jitter.
+- Fellow-eye enforcement uses fused hand-eye IoU + sclera suppression with hysteresis.
+- Soft warning appears before hard hold/pause.
+
+## Quick Start
+
+Full Raspberry Pi setup and services: see [PI_SETUP.md](PI_SETUP.md).
+
+Local checks:
+
+```bash
+cd nadi_vision
+pytest -q
+cd frontend && npx tsc --noEmit
+```
 
 ## Project Structure
 
 ```
 backend/
-  main.py                 App service entry point
-  config.py               Queue sizes + WS constants
-  scoring/
-    constants.py          All tunable constants (logMAR, EAR, debounce…)
-    engine.py             AcuitySession — 14-line ETDRS scoring
-  integrity/
-    monitor.py            IntegrityMonitor state machine
-  sensors/
-    camera.py             SharedMemoryCameraConsumer (no OpenCV)
-    ultrasonic.py         HC-SR04 Median(3)+EMA(0.7) worker
-  vision/
-    face_detection.py     FaceDetection 6 Hz + FaceMesh EAR 3 Hz
-  server/
-    ws_server.py          Session protocol WebSocket server
-  report/
-    generator.py          Report builder with per-level scores
+  main.py
+  config.py
+  integrity/monitor.py
+  report/generator.py
+  scoring/constants.py
+  scoring/engine.py
+  sensors/camera.py
+  sensors/ultrasonic.py
+  server/ws_server.py
+  vision/face_detection.py
 
 scripts/
-  camera_service.py       System-Python camera service (Picamera2 + shared mem)
-  benchmark_face_models.py
-  perf_validate.py
+  camera_service.py
 
 frontend/src/
-  app/page.tsx            Screen router (landing → camera-setup → test → results)
-  components/screens/     LandingScreen · CameraSetupScreen · TestScreen · ResultsScreen
+  app/
+  components/screens/
   lib/
-    hardware-ws.ts        Session-protocol WebSocket client
-    store.ts              Zustand state (calibration, session, result)
-    types.ts              Shared TypeScript types
-    optotype.ts           E-height math (mm → px)
-    screen-calibration.ts Auto-detect display PPI
 
-tests/                    29 pytest tests (scoring · integrity · report)
+tests/
 ```
 
-## Key Design Decisions
+## Environment Variables (camera service)
 
-| Decision | Choice | Reason |
-|---|---|---|
-| Face detector | MediaPipe FaceDetection | 13.8 ms avg vs YuNet 33.5 ms on Pi 4 |
-| Eye-open detection | MediaPipe FaceMesh EAR | Eyelid landmarks, no extra model |
-| Camera ↔ app IPC | POSIX shared memory + Unix socket | Zero pixel-copy, cross-interpreter |
-| Distance source | HC-SR04 only | No browser estimates ever reach Pi session |
-| Scoring owner | Backend (AcuitySession) | Frontend display-only, no answer key |
-| Optotype | Tumbling E | Sole clinical optotype for this build |
-
-## Tests
-
-```bash
-cd nadi_vision
-python3 -m pytest tests/ -v
-```
-
-29 tests cover: scoring termination · 14-line protocol · fellow-eye holds ·
-distance holds · integrity debounce · report generation.
-
-## Environment Variables (camera_service.py)
-
-| Variable | Default | Description |
-|---|---|---|
-| `NADI_INFER_W` | `320` | Inference frame width |
-| `NADI_INFER_H` | `240` | Inference frame height |
-| `NADI_PREVIEW_W` | `1280` | Preview frame width |
-| `NADI_PREVIEW_H` | `720` | Preview frame height |
-| `NADI_CAM_FPS` | `30` | Camera capture FPS |
-| `NADI_INFER_SKIP` | `5` | Publish every Nth frame (30/5 = 6 Hz) |
-| `NADI_PREVIEW_SKIP` | `4` | Preview JPEG every Nth frame (~7.5 fps) |
-| `NADI_UDS_PATH` | `/run/nadivision/frames.sock` | Unix socket path |
-| `NADI_MJPEG_PORT` | `8766` | MJPEG HTTP server port |
-| `NADI_JPEG_QUALITY` | `65` | Preview JPEG quality |
-
-python3 perf_validate.py --benchmark-json real_benchmark_results.json
-```
-
-## Remaining Verification on Target Pi
-- Run full OD/OS flow with backend + frontend together.
-- Capture CPU/memory headroom during a full session.
-- Confirm no OOM and stable frame processing under kiosk load.
-
-## Pi 4 Quick Verification
-
-## Pi Smoke Test
-
-# 1. Camera service (system Python)
-rpicam-hello --timeout 2000
-
-# 2. App service deps (uv venv — cv2 is NOT required)
-uv run python -c "import mediapipe, websockets, numpy, gpiozero; print('app deps OK')"
-
-# 3. WebSocket check (while app service is running)
-uv run python -c "
-import asyncio, json, websockets
-async def t():
-    async with websockets.connect('ws://127.0.0.1:8765') as ws:
-        print('WS OK', sorted(json.loads(await ws.recv()).keys()))
-asyncio.run(t())"
-
-# 4. Tests
-python3 -m pytest tests/ -q
+| Variable | Default |
+|---|---|
+| NADI_INFER_W | 320 |
+| NADI_INFER_H | 240 |
+| NADI_PREVIEW_W | 1280 |
+| NADI_PREVIEW_H | 720 |
+| NADI_CAM_FPS | 30 |
+| NADI_INFER_SKIP | 5 |
+| NADI_PREVIEW_SKIP | 4 |
+| NADI_UDS_PATH | /run/nadivision/frames.sock |
+| NADI_MJPEG_PORT | 8766 |
+| NADI_JPEG_QUALITY | 65 |
 
 

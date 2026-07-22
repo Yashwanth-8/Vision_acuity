@@ -102,7 +102,7 @@ class HardwareWSManager {
             // Reset session state to idle so the UI shows the waiting screen
             useAppStore.getState().setSessionState({
                 session_status: "idle",
-                hold: { paused: false, message: null },
+                hold: { paused: false, warning: false, message: null },
             });
             this.notify();
             if (!this.destroyed) this.scheduleReconnect();

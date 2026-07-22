@@ -20,7 +20,6 @@ from backend.config import (
     DISTANCE_QUEUE_MAXSIZE,
     FACE_DETECT_FRAME_SKIP,
     FRAME_QUEUE_MAXSIZE,
-    INTEGRITY_QUEUE_MAXSIZE,
 )
 from backend.sensors.camera import SharedMemoryCameraConsumer
 from backend.sensors.ultrasonic import UltrasonicWorker
@@ -33,9 +32,9 @@ async def _run_backend() -> None:
     """Start all backend subsystems and block until shutdown signal."""
     stop_event = threading.Event()
     mp_stop_event = multiprocessing.Event()
+    mp_single_eye = multiprocessing.Value("b", 0)
 
     distance_queue: Queue = Queue(maxsize=DISTANCE_QUEUE_MAXSIZE)
-    integrity_queue: Queue = Queue(maxsize=INTEGRITY_QUEUE_MAXSIZE)
 
     # Multiprocessing queues are required between camera consumer thread and
     # the inference subprocess.
@@ -49,12 +48,13 @@ async def _run_backend() -> None:
         attention_queue=attention_queue,
         stop_event=mp_stop_event,
         frame_skip=FACE_DETECT_FRAME_SKIP,
+        single_eye_flag=mp_single_eye,
     )
 
     ws_server = WSServer(
         distance_queue=distance_queue,
         attention_queue=attention_queue,
-        integrity_queue=integrity_queue,
+        single_eye_flag=mp_single_eye,
     )
 
     def _on_signal(*_: object) -> None:

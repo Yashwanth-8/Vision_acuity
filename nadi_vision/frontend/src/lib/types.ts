@@ -13,8 +13,6 @@ export type AppScreen =
     | "test"
     | "results";
 
-export type StabilityState = "LOCKED" | "STABILIZING" | "UNLOCKED";
-
 export type EDirection = "up" | "down" | "left" | "right";
 
 // Acuity levels for display reference (scoring is owned by the backend)
@@ -39,6 +37,7 @@ export interface SessionState {
     distance_m?: number | null;
     hold: {
         paused: boolean;
+        warning: boolean;
         message: string | null;
     };
     attention?: {

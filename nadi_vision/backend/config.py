@@ -13,4 +13,3 @@ from backend.scoring.constants import (  # re-export for subsystem consumers
 FRAME_QUEUE_MAXSIZE = 2
 DISTANCE_QUEUE_MAXSIZE = 3
 ATTENTION_QUEUE_MAXSIZE = 3
-INTEGRITY_QUEUE_MAXSIZE = 64
