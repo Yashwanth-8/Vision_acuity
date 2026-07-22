@@ -15,7 +15,7 @@
 ## 2. Runtime architecture and Pi optimisation
 
 ```mermaid
-flowchart LR
+flowchart LRal
   CAM["Camera service\nsystem Python + Picamera2"]
   PREV["Normal-colour preview\nJPEG/MJPEG 5–10 fps"]
   RING["3-slot shared-memory ring\n320×240 RGB frames"]

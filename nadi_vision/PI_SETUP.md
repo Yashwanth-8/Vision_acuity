@@ -14,6 +14,7 @@ sudo apt update && sudo apt upgrade -y
 # Core system libraries
 sudo apt install -y \
   python3-picamera2 \
+  python3-numpy \
   python3-pil \
   python3-gpiozero \
   python3-lgpio \

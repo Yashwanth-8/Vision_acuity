@@ -5,6 +5,7 @@ const nextConfig: NextConfig = {
   // cannot handle React's intentional double-mount in development.
   reactStrictMode: false,
   reactCompiler: true,
+  output: "standalone",
 };
 
 export default nextConfig;
