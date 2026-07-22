@@ -3,16 +3,13 @@
 nadivision-camera.service executes this script under the Raspberry Pi OS
 system Python so it can import libcamera / picamera2.
 
-Architecture (Updates.md §2.2):
-- Two independent Picamera2 streams are configured once at startup:
-    inference : 320×240 RGB888  — sampled at 30 fps, every 5th frame published
-    preview   : 1280×720 XRGB8888 — encoded to JPEG by Picamera2 at 5–10 fps
-- Three named POSIX shared-memory slots (320×240 × 3 bytes each) hold the
-  latest inference frames.  The application service attaches to them by name.
-- A Unix-domain SOCK_SEQPACKET socket carries compact frame-metadata packets
-  to the application service.  No pixel data crosses the socket.
-- The preview stream is served as MJPEG over HTTP on port 8766 so the kiosk
-  frontend can display it via a plain <img> src without any WebSocket relay.
+Architecture:
+- One Picamera2 main stream at preview resolution (1280×720 RGB888).
+  Picamera2 requires lores ≤ main, so a single stream is used and inference
+  frames are downscaled to 320×240 in Python with PIL (no OpenCV needed).
+- Three named POSIX shared-memory slots (320×240 × 3 bytes) hold inference frames.
+- A Unix-domain SOCK_SEQPACKET socket carries frame-metadata packets to the app.
+- Preview JPEG is served as MJPEG over HTTP on port 8766.
 - OpenCV is NOT imported or used anywhere in this module.
 
 Usage (system Python):
@@ -44,6 +41,8 @@ import time
 from multiprocessing.shared_memory import SharedMemory
 from typing import Optional
 
+import numpy as np
+from PIL import Image
 from picamera2 import Picamera2
 
 # ---------------------------------------------------------------------------
@@ -74,11 +73,15 @@ class _SharedMemoryRing:
     def __init__(self) -> None:
         self._slots: list[SharedMemory] = []
         for i in range(_SLOT_COUNT):
-            shm = SharedMemory(
-                name=f"nadi_frame_{i}",
-                create=True,
-                size=_INFER_BYTES,
-            )
+            name = f"nadi_frame_{i}"
+            # Clean up any segment left behind by a previous crash
+            try:
+                stale = SharedMemory(name=name, create=False)
+                stale.close()
+                stale.unlink()
+            except FileNotFoundError:
+                pass
+            shm = SharedMemory(name=name, create=True, size=_INFER_BYTES)
             self._slots.append(shm)
 
     def write(self, slot: int, rgb_bytes: bytes) -> None:
@@ -229,12 +232,23 @@ class _UDSServer:
 # ---------------------------------------------------------------------------
 
 def _build_camera_config(cam: Picamera2) -> object:
-    """Configure two independent streams — inference (RGB888) + preview (XRGB8888)."""
+    """Single main stream at full resolution (RGB888).
+
+    Picamera2 requires lores <= main dimensions, so a single stream is used
+    and the inference frame is downscaled in Python via PIL — no OpenCV needed.
+    This avoids the 'lores stream dimensions may not exceed main stream' error.
+    """
     return cam.create_video_configuration(
-        main={"size": (_INFER_W, _INFER_H), "format": "RGB888"},
-        lores={"size": (_PREVIEW_W, _PREVIEW_H), "format": "XRGB8888"},
+        main={"size": (_PREVIEW_W, _PREVIEW_H), "format": "RGB888"},
         controls={"FrameRate": _CAM_FPS},
         buffer_count=4,
+    )
+
+
+def _resize_for_inference(frame: np.ndarray) -> np.ndarray:
+    """Downscale an RGB888 frame to INFER_W x INFER_H using PIL (no OpenCV)."""
+    return np.asarray(
+        Image.fromarray(frame, mode="RGB").resize((_INFER_W, _INFER_H), Image.BILINEAR)
     )
 
 
@@ -260,15 +274,14 @@ def _run(stop_event: threading.Event) -> None:
             # Accept a new consumer connection if one is pending
             uds.accept_if_pending()
 
-            # Capture inference frame (320×240 RGB888) from main stream
-            infer_frame = cam.capture_array("main")   # shape (H, W, 3) RGB
+            # Capture full-resolution RGB888 from main stream
+            main_frame = cam.capture_array("main")  # shape (H, W, 3) RGB
             infer_frame_idx += 1
-
-            # Capture preview frame (1280×720 XRGB8888) from lores stream
             preview_frame_idx += 1
 
-            # Publish inference frame every INFER_SKIP captures (→ 6 Hz)
+            # Publish downscaled inference frame every INFER_SKIP captures (→ 6 Hz)
             if infer_frame_idx % _INFER_SKIP == 0:
+                infer_frame = _resize_for_inference(main_frame)  # 320×240 RGB
                 seq += 1
                 slot = (seq - 1) % _SLOT_COUNT
                 ring.write(slot, bytes(infer_frame.tobytes()))
@@ -284,12 +297,7 @@ def _run(stop_event: threading.Event) -> None:
 
             # Encode and publish preview JPEG every PREVIEW_SKIP captures
             if preview_frame_idx % _PREVIEW_SKIP == 0:
-                # lores XRGB8888: drop the X channel to get RGB
-                lores_frame = cam.capture_array("lores")
-                if lores_frame is not None and lores_frame.ndim == 3:
-                    # XRGB8888 has 4 channels; channels 1-3 are RGB
-                    rgb_preview = lores_frame[:, :, 1:4]
-                    _encode_preview_jpeg(rgb_preview)
+                _encode_preview_jpeg(main_frame)
 
             # Pace the loop to the camera frame rate
             elapsed = time.monotonic() - ts_start
@@ -304,18 +312,14 @@ def _run(stop_event: threading.Event) -> None:
         ring.cleanup()
 
 
-def _encode_preview_jpeg(rgb: "np.ndarray") -> None:
-    """Encode an RGB NumPy array to JPEG using Pillow (python3-pil on Pi OS)."""
+def _encode_preview_jpeg(rgb: np.ndarray) -> None:
+    """Encode an RGB frame to JPEG and push it to the MJPEG buffer."""
     try:
         buf = io.BytesIO()
-        # Import PIL only if available (it is on Pi OS Bookworm via python3-pil)
-        try:
-            from PIL import Image
-            img = Image.fromarray(rgb, mode="RGB")
-            img.save(buf, format="JPEG", quality=_JPEG_QUALITY, optimize=False)
-            _mjpeg_output.write(buf.getvalue())
-        except ImportError:
-            pass  # PIL not available — preview disabled, inference continues
+        Image.fromarray(rgb, mode="RGB").save(
+            buf, format="JPEG", quality=_JPEG_QUALITY, optimize=False
+        )
+        _mjpeg_output.write(buf.getvalue())
     except Exception:
         pass
 
