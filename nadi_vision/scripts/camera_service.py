@@ -246,9 +246,14 @@ def _build_camera_config(cam: Picamera2) -> object:
 
 
 def _resize_for_inference(frame: np.ndarray) -> np.ndarray:
-    """Downscale an RGB888 frame to INFER_W x INFER_H using PIL (no OpenCV)."""
+    """Downscale and convert BGR→RGB for MediaPipe (no OpenCV).
+
+    Picamera2 'RGB888' stores pixels as BGR in memory (OpenCV compatibility).
+    MediaPipe FaceDetection expects RGB, so channels are flipped here.
+    """
+    rgb = frame[:, :, ::-1]          # BGR → RGB
     return np.asarray(
-        Image.fromarray(frame, mode="RGB").resize((_INFER_W, _INFER_H), Image.BILINEAR)
+        Image.fromarray(rgb, mode="RGB").resize((_INFER_W, _INFER_H), Image.BILINEAR)
     )
 
 
@@ -312,11 +317,15 @@ def _run(stop_event: threading.Event) -> None:
         ring.cleanup()
 
 
-def _encode_preview_jpeg(rgb: np.ndarray) -> None:
-    """Encode an RGB frame to JPEG and push it to the MJPEG buffer."""
+def _encode_preview_jpeg(bgr: np.ndarray) -> None:
+    """Convert BGR→RGB and encode to JPEG for the MJPEG preview stream.
+
+    Picamera2 'RGB888' stores pixels as BGR in memory, so channels are
+    flipped before handing the array to PIL.
+    """
     try:
         buf = io.BytesIO()
-        Image.fromarray(rgb, mode="RGB").save(
+        Image.fromarray(bgr[:, :, ::-1], mode="RGB").save(
             buf, format="JPEG", quality=_JPEG_QUALITY, optimize=False
         )
         _mjpeg_output.write(buf.getvalue())

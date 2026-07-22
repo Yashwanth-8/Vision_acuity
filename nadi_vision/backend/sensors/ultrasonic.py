@@ -35,8 +35,8 @@ class UltrasonicWorker:
         self,
         distance_queue: Queue,
         *,
-        trigger_pin: int = 17,
-        echo_pin: int = 27,
+        trigger_pin: int = 23,
+        echo_pin: int = 24,
         poll_hz: float = 17.0,
         read_distance_fn: Optional[Callable[[], float]] = None,
     ) -> None:
