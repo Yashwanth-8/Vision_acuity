@@ -72,6 +72,12 @@ uv run python -c "import mediapipe, websockets, numpy; print('backend deps OK')"
 cd frontend
 npm install
 npm run build
+
+# Next.js standalone mode does NOT copy static assets automatically.
+# These two lines are required after every build or the browser gets 404s.
+cp -r .next/static .next/standalone/.next/static
+cp -r public .next/standalone/public
+
 cd ..
 ```
 
