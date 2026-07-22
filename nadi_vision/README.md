@@ -111,23 +111,23 @@ python3 perf_validate.py --benchmark-json real_benchmark_results.json
 
 ## Pi 4 Quick Verification
 
-1. Verify Python environments:
-```bash
-/usr/bin/python3 -c "import libcamera, picamera2; print('system camera stack OK')"
-python -c "import mediapipe, cv2; print('venv mediapipe stack OK')"
-```
+## Pi Smoke Test
 
-2. Verify backend websocket is live:
-```bash
-python - <<'PY'
+# 1. Camera service (system Python)
+rpicam-hello --timeout 2000
+
+# 2. App service deps (uv venv — cv2 is NOT required)
+uv run python -c "import mediapipe, websockets, numpy, gpiozero; print('app deps OK')"
+
+# 3. WebSocket check (while app service is running)
+uv run python -c "
 import asyncio, json, websockets
+async def t():
+    async with websockets.connect('ws://127.0.0.1:8765') as ws:
+        print('WS OK', sorted(json.loads(await ws.recv()).keys()))
+asyncio.run(t())"
 
-async def main():
-	async with websockets.connect('ws://127.0.0.1:8765') as ws:
-		msg = await ws.recv()
-		payload = json.loads(msg)
-		print('WS OK', sorted(payload.keys()))
+# 4. Tests
+python3 -m pytest tests/ -q
 
-asyncio.run(main())
-PY
-```
+

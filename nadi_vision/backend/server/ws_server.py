@@ -175,6 +175,9 @@ class WSServer:
         if self._last_distance:
             sess.trial_start_distance = self._last_distance
             self._integrity_monitor.mark_trial_start_distance(self._last_distance)
+            # Pre-seed distance so the 'Hold still' overlay does not fire
+            # immediately at session start when the patient is already still.
+            self._integrity_monitor.prime_distance(self._last_distance)
         self._session = sess
 
     async def _handle_trial_answer(self, msg: Dict[str, Any]) -> None:

@@ -46,11 +46,15 @@ DISTANCE_STABILITY_HOLD_S = 1.5      # seconds of stable distance required to un
 
 # Debounce thresholds
 FACE_LOSS_DEBOUNCE_S = 2.0
-GAZE_OFF_DEBOUNCE_S = 1.0
+# Gaze: raised to 2.0 s and threshold to 35°.
+# The coarse bounding-box yaw estimate has ±20°+ noise at 320×240;
+# 35° requires the patient to be clearly looking sideways, not just
+# a slight head shift or detection jitter.
+GAZE_OFF_DEBOUNCE_S = 2.0
 # Fellow-eye hold requires 6 consecutive FaceMesh detections at 3 Hz → 2.0 s.
 # Raised from 1.0 s to reduce false holds caused by hand edge cases and glasses.
 FELLOW_EYE_DEBOUNCE_S = 2.0
-GAZE_YAW_THRESHOLD_DEG = 20.0
+GAZE_YAW_THRESHOLD_DEG = 35.0
 
 # Response timing
 FAST_ANSWER_THRESHOLD_MS = 300

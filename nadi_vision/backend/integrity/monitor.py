@@ -213,6 +213,22 @@ class IntegrityMonitor:
         """Record the distance at the start of a trial for drift detection."""
         self._trial_start_distance = distance_m
 
+    def prime_distance(self, distance_m: float) -> None:
+        """Pre-seed the distance anchor so stability is satisfied immediately.
+
+        Call at session.start with the current sensor reading so the patient
+        does not see 'Hold still while we set your test distance' at the
+        beginning of every session when they are already seated and still.
+        The stability timer is fast-forwarded to its threshold so the very
+        next update_distance call clears any DISTANCE_UNSTABLE hold.
+        """
+        self._distance_anchor = distance_m
+        now = self._time_fn()
+        # Fast-forward the timer to appear already satisfied
+        self._distance_stability_timer._start = (
+            now - self._distance_stability_timer.threshold_s
+        )
+
     def set_fellow_eye_check_enabled(self, enabled: bool) -> None:
         """Enable or disable the fellow-eye occlusion hold.
 
