@@ -109,26 +109,26 @@ def test_fellow_eye_hold_disabled_before_session_start() -> None:
 
 
 def test_fellow_eye_hold_triggers_for_od_test_when_left_eye_open() -> None:
-    """OD test: patient's LEFT eye (OS) open for > 1.0 s must trigger hold."""
+    """OD test: patient's LEFT eye (OS) open for > 2.0 s must trigger hold."""
     monitor, clock, paused_flags, _ = _monitor_with_clock(tested_eye="OD",
                                                           fellow_eye_check_enabled=True)
     # Patient's left eye is open (OS = fellow eye when testing OD)
     monitor.update_attention(_state(left_eye_open=True, right_eye_open=True))
-    clock.advance(0.5)
+    clock.advance(1.0)
     monitor.update_attention(_state(left_eye_open=True, right_eye_open=True))
     assert IntegrityFlag.FELLOW_EYE_OPEN not in paused_flags  # debounce not yet
 
-    clock.advance(0.6)  # total > 1.0 s
+    clock.advance(1.1)  # total > 2.0 s
     monitor.update_attention(_state(left_eye_open=True, right_eye_open=True))
     assert IntegrityFlag.FELLOW_EYE_OPEN in paused_flags
 
 
 def test_fellow_eye_hold_triggers_for_os_test_when_right_eye_open() -> None:
-    """OS test: patient's RIGHT eye (OD) open for > 1.0 s must trigger hold."""
+    """OS test: patient's RIGHT eye (OD) open for > 2.0 s must trigger hold."""
     monitor, clock, paused_flags, _ = _monitor_with_clock(tested_eye="OS",
                                                           fellow_eye_check_enabled=True)
     monitor.update_attention(_state(left_eye_open=True, right_eye_open=True))
-    clock.advance(1.1)
+    clock.advance(2.1)
     monitor.update_attention(_state(left_eye_open=True, right_eye_open=True))
     assert IntegrityFlag.FELLOW_EYE_OPEN in paused_flags
 
@@ -140,7 +140,7 @@ def test_fellow_eye_hold_clears_when_eye_covered() -> None:
     )
     # Trigger hold
     monitor.update_attention(_state(left_eye_open=True, right_eye_open=True))
-    clock.advance(1.1)
+    clock.advance(2.1)
     monitor.update_attention(_state(left_eye_open=True, right_eye_open=True))
     assert IntegrityFlag.FELLOW_EYE_OPEN in paused_flags
     assert monitor.is_paused()
@@ -171,7 +171,7 @@ def test_fellow_eye_check_disabled_after_session_ends() -> None:
     )
     # Trigger hold
     monitor.update_attention(_state(left_eye_open=True))
-    clock.advance(1.1)
+    clock.advance(2.1)
     monitor.update_attention(_state(left_eye_open=True))
     assert IntegrityFlag.FELLOW_EYE_OPEN in paused_flags
 

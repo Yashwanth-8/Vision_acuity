@@ -305,6 +305,17 @@ export default function TestScreen() {
                     </div>
                 </div>
             )}
+
+            {/* ── Camera preview — bottom-left corner ── */}
+            {/* Shows the live MJPEG feed from the camera service at port 8766.
+                Stays visible during test and hold so the operator/patient can
+                verify their positioning at a glance. */}
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+                src="http://localhost:8766/preview"
+                alt="Camera preview"
+                className="fixed bottom-4 left-4 w-32 h-24 rounded-xl object-cover border border-white/15 opacity-50 hover:opacity-90 transition-opacity duration-200 z-20"
+            />
         </div>
     );
 }

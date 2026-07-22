@@ -33,25 +33,30 @@ INFER_WIDTH = 320
 INFER_HEIGHT = 240
 
 # Eye Aspect Ratio threshold for open/closed detection (MediaPipe Face Mesh)
-# EAR < EAR_CLOSED_THRESHOLD → eye is closed / covered
-# EAR >= EAR_OPEN_THRESHOLD  → eye is visibly open
-EAR_OPEN_THRESHOLD = 0.22
+# Raised to 0.30 to reduce false holds from partial occlusion, glasses, or
+# lighting variation. EAR must clearly exceed this threshold to be considered
+# visibly open.
+EAR_OPEN_THRESHOLD = 0.30
 
 # Distance stability
-DISTANCE_STABILITY_WINDOW_M = 0.05   # ±5 cm window for stable-hold timer
-DISTANCE_STABILITY_HOLD_S = 3.0      # seconds of stable distance required to unlock
+# Widened to ±10 cm based on clinical survey (doctors accept up to 10 cm error).
+# Hold time reduced to 1.5 s — achievable in real-world conditions.
+DISTANCE_STABILITY_WINDOW_M = 0.10   # ±10 cm window for stable-hold timer
+DISTANCE_STABILITY_HOLD_S = 1.5      # seconds of stable distance required to unlock
 
 # Debounce thresholds
 FACE_LOSS_DEBOUNCE_S = 2.0
 GAZE_OFF_DEBOUNCE_S = 1.0
-# Fellow-eye hold requires 3 consecutive FaceMesh detections at 3 Hz → 1.0 s
-FELLOW_EYE_DEBOUNCE_S = 1.0
+# Fellow-eye hold requires 6 consecutive FaceMesh detections at 3 Hz → 2.0 s.
+# Raised from 1.0 s to reduce false holds caused by hand edge cases and glasses.
+FELLOW_EYE_DEBOUNCE_S = 2.0
 GAZE_YAW_THRESHOLD_DEG = 20.0
 
 # Response timing
 FAST_ANSWER_THRESHOLD_MS = 300
 RESUME_STABILITY_HOLD_S = 1.5
-DISTANCE_DRIFT_TOLERANCE_M = 0.03
+# Mid-trial drift tolerance matches the stability window (±10 cm).
+DISTANCE_DRIFT_TOLERANCE_M = 0.10
 
 # WebSocket defaults
 WS_HOST = "0.0.0.0"
