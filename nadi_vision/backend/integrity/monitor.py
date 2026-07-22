@@ -181,29 +181,28 @@ class IntegrityMonitor:
         self._update_resume_state(now)
 
     def update_distance(self, distance_m: float) -> None:
-        """Track distance stability and trial-level drift."""
+        """Track distance and trial-level drift without sticky stability holds."""
         now = self._time_fn()
 
-        # Stability gate: require distance to stay within ±WINDOW for 3 s
+        # Keep a rolling anchor for informational stability, but do not pause the
+        # session on micro-variation. This avoids long/sticky DISTANCE_UNSTABLE holds.
         if self._distance_anchor is None:
             self._distance_anchor = distance_m
 
         within_window = abs(distance_m - self._distance_anchor) <= DISTANCE_STABILITY_WINDOW_M
         if not within_window:
-            # Patient moved; reset anchor and restart stability countdown
+            # Patient moved; reset anchor
             self._distance_anchor = distance_m
-
-        stable = self._distance_stability_timer.update(within_window, now)
-        if not stable:
-            self._trigger_pause(IntegrityFlag.DISTANCE_UNSTABLE, now)
-        else:
-            self._clear_pause_flag(IntegrityFlag.DISTANCE_UNSTABLE)
+        self._distance_stability_timer.update(within_window, now)
+        self._clear_pause_flag(IntegrityFlag.DISTANCE_UNSTABLE)
 
         # Trial-level drift: hold if moved beyond tolerance since trial started
         if self._trial_start_distance is not None:
             drifted = abs(distance_m - self._trial_start_distance) > DISTANCE_DRIFT_TOLERANCE_M
             if drifted:
                 self._trigger_pause(IntegrityFlag.DISTANCE_MOVED, now)
+                # Re-anchor immediately so the hold can clear once patient is still.
+                self._trial_start_distance = distance_m
             else:
                 self._clear_pause_flag(IntegrityFlag.DISTANCE_MOVED)
 

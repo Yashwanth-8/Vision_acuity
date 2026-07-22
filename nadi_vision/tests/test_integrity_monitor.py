@@ -226,3 +226,36 @@ def test_normal_response_not_fast_flagged() -> None:
         trial_end_distance_m=0.5,
     )
     assert IntegrityFlag.FAST_ANSWER not in flags
+
+
+def test_distance_unstable_never_triggers_active_pause() -> None:
+    monitor, clock, paused_flags, _ = _monitor_with_clock()
+
+    monitor.update_distance(0.50)
+    clock.advance(0.2)
+    monitor.update_distance(0.65)
+    clock.advance(0.2)
+    monitor.update_distance(0.45)
+
+    assert IntegrityFlag.DISTANCE_UNSTABLE not in paused_flags
+
+
+def test_distance_moved_reanchors_and_resumes_when_still() -> None:
+    monitor, clock, paused_flags, resume_events = _monitor_with_clock()
+    monitor.mark_trial_start_distance(0.50)
+
+    # Trigger moved hold beyond drift tolerance
+    monitor.update_distance(0.70)
+    assert IntegrityFlag.DISTANCE_MOVED in paused_flags
+    assert monitor.is_paused()
+
+    # Staying still at new distance should clear moved flag and resume after hold.
+    monitor.update_distance(0.70)
+    clock.advance(1.0)
+    monitor.update_distance(0.70)
+    assert resume_events == []
+
+    clock.advance(0.6)
+    monitor.update_distance(0.70)
+    assert resume_events == [True]
+    assert not monitor.is_paused()

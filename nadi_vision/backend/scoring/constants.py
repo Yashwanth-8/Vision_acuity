@@ -24,19 +24,11 @@ SENSOR_TO_EYE_OFFSET_M = 0.013
 # Vision and attention — MediaPipe FaceDetection (model_selection=0)
 # Camera service delivers frames at 6 Hz (every 5th of 30 fps captured frames).
 # The inference loop processes every received frame, so FRAME_SKIP = 1.
-# FaceMesh for eye-state detection runs at 3 Hz (every 2nd inference frame).
 FACE_DETECT_FRAME_SKIP = 1
-FACE_MESH_SKIP = 2            # run FaceMesh on every 2nd inference frame → 3 Hz
 
 # Inference frame dimensions (must match camera_service.py NADI_INFER_W/H defaults)
 INFER_WIDTH = 320
 INFER_HEIGHT = 240
-
-# Eye Aspect Ratio threshold for open/closed detection (MediaPipe Face Mesh)
-# Raised to 0.30 to reduce false holds from partial occlusion, glasses, or
-# lighting variation. EAR must clearly exceed this threshold to be considered
-# visibly open.
-EAR_OPEN_THRESHOLD = 0.30
 
 # Distance stability
 # Widened to ±10 cm based on clinical survey (doctors accept up to 10 cm error).
@@ -51,7 +43,7 @@ FACE_LOSS_DEBOUNCE_S = 2.0
 # 35° requires the patient to be clearly looking sideways, not just
 # a slight head shift or detection jitter.
 GAZE_OFF_DEBOUNCE_S = 2.0
-# Fellow-eye hold requires 6 consecutive FaceMesh detections at 3 Hz → 2.0 s.
+# Fellow-eye hold uses a 2.0 s debounce to avoid transient false holds.
 # Raised from 1.0 s to reduce false holds caused by hand edge cases and glasses.
 FELLOW_EYE_DEBOUNCE_S = 2.0
 GAZE_YAW_THRESHOLD_DEG = 35.0

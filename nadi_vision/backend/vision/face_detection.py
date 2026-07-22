@@ -1,17 +1,16 @@
 """Face detection and attention inference worker.
 
-Two MediaPipe models run in one dedicated subprocess:
+One MediaPipe model runs in a dedicated subprocess:
 
   FaceDetection  (model_selection=0)       6 Hz  fast face/count/position check
-  FaceMesh       (refine_landmarks=False)  3 Hz  Eye Aspect Ratio per eye
 
-EAR-based eye-open mapping (unmirrored patient coordinates):
+Sclera-based eye-open mapping (unmirrored patient coordinates):
   Camera image-LEFT  (lower x)  = Patient RIGHT eye (OD)
   Camera image-RIGHT (higher x) = Patient LEFT  eye (OS)
 
 Attention dict fields:
-  right_eye_open  patient OD eye visible (EAR >= threshold)
-  left_eye_open   patient OS eye visible (EAR >= threshold)
+    right_eye_open  patient OD eye appears open
+    left_eye_open   patient OS eye appears open
 
 IntegrityMonitor usage:
   tested_eye=OD  check left_eye_open   (patient must cover OS)
@@ -29,7 +28,7 @@ from typing import Any, Dict, Optional
 
 import numpy as np
 
-from backend.scoring.constants import EAR_OPEN_THRESHOLD, FACE_MESH_SKIP, INFER_HEIGHT, INFER_WIDTH
+from backend.scoring.constants import INFER_HEIGHT, INFER_WIDTH
 
 try:
     import mediapipe as mp
@@ -37,44 +36,76 @@ try:
 except ImportError:  # pragma: no cover
     _MEDIAPIPE_AVAILABLE = False
 
-# ---------------------------------------------------------------------------
-# EAR landmark indices (MediaPipe Face Mesh, 468 landmarks)
-#
-# Six-point EAR: [outer, top-outer, top-inner, inner, bottom-inner, bottom-outer]
-# EAR = (|p2-p6| + |p3-p5|) / (2 * |p1-p4|)
-# ---------------------------------------------------------------------------
-_IMG_LEFT_EAR_IDX  = [33,  160, 158, 133, 153, 144]  # image-left  = patient OD
-_IMG_RIGHT_EAR_IDX = [362, 385, 387, 263, 373, 380]  # image-right = patient OS
+def _clip_box(x0: int, y0: int, x1: int, y1: int, frame_w: int, frame_h: int) -> tuple[int, int, int, int]:
+    x0 = max(0, min(frame_w, x0))
+    y0 = max(0, min(frame_h, y0))
+    x1 = max(0, min(frame_w, x1))
+    y1 = max(0, min(frame_h, y1))
+    return x0, y0, x1, y1
 
 
-def _ear(landmarks: Any, indices: list[int], w: int, h: int) -> float:
-    """Compute Eye Aspect Ratio from 6 Face Mesh landmark indices."""
-    pts = [(landmarks[i].x * w, landmarks[i].y * h) for i in indices]
-    a = math.hypot(pts[1][0] - pts[5][0], pts[1][1] - pts[5][1])
-    b = math.hypot(pts[2][0] - pts[4][0], pts[2][1] - pts[4][1])
-    c = math.hypot(pts[0][0] - pts[3][0], pts[0][1] - pts[3][1])
-    return (a + b) / (2.0 * c) if c > 0 else 0.0
+def _estimate_eye_open_from_roi(frame_rgb: np.ndarray, roi: tuple[int, int, int, int]) -> bool:
+    """Infer if an eye appears open via sclera brightness in a compact ROI.
+
+    The method intentionally prefers false-closed over false-open. If uncertain,
+    it returns False so occluded fellow-eye does not cause unnecessary holds.
+    """
+    x0, y0, x1, y1 = roi
+    if x1 <= x0 or y1 <= y0:
+        return False
+
+    patch = frame_rgb[y0:y1, x0:x1]
+    if patch.size == 0:
+        return False
+
+    gray = patch.mean(axis=2)
+    p90 = float(np.percentile(gray, 90))
+    p50 = float(np.percentile(gray, 50))
+    bright_ratio = float(np.mean(gray >= 190.0))
+    contrast = p90 - p50
+
+    # Open eye usually contains enough bright sclera pixels with local contrast.
+    return bright_ratio >= 0.05 and contrast >= 22.0
 
 
-def _eye_states_from_mesh(
-    mesh_result: Any,
+def _eye_states_from_bbox(
+    frame_rgb: np.ndarray,
+    bbox: Dict[str, float],
     frame_w: int,
     frame_h: int,
 ) -> Dict[str, bool]:
-    """Return patient-perspective eye-open flags from a FaceMesh result.
+    """Estimate patient eye-open flags from face box geometry and sclera signal.
 
-    Defaults to False (eyes covered = safe state) when no face is found.
+    Mapping:
+    - Image-left ROI  -> patient RIGHT eye (OD)
+    - Image-right ROI -> patient LEFT eye (OS)
     """
-    if not mesh_result.multi_face_landmarks:
+    x = int(bbox["x"])
+    y = int(bbox["y"])
+    w = int(bbox["w"])
+    h = int(bbox["h"])
+
+    if w < 30 or h < 30:
         return {"right_eye_open": False, "left_eye_open": False}
 
-    lm = mesh_result.multi_face_landmarks[0].landmark
-    ear_od = _ear(lm, _IMG_LEFT_EAR_IDX,  frame_w, frame_h)  # patient OD
-    ear_os = _ear(lm, _IMG_RIGHT_EAR_IDX, frame_w, frame_h)  # patient OS
+    eye_band_top = y + int(0.22 * h)
+    eye_band_bottom = y + int(0.48 * h)
+
+    left_eye_x0 = x + int(0.10 * w)
+    left_eye_x1 = x + int(0.43 * w)
+
+    right_eye_x0 = x + int(0.57 * w)
+    right_eye_x1 = x + int(0.90 * w)
+
+    left_roi = _clip_box(left_eye_x0, eye_band_top, left_eye_x1, eye_band_bottom, frame_w, frame_h)
+    right_roi = _clip_box(right_eye_x0, eye_band_top, right_eye_x1, eye_band_bottom, frame_w, frame_h)
+
+    image_left_open = _estimate_eye_open_from_roi(frame_rgb, left_roi)
+    image_right_open = _estimate_eye_open_from_roi(frame_rgb, right_roi)
 
     return {
-        "right_eye_open": ear_od >= EAR_OPEN_THRESHOLD,
-        "left_eye_open":  ear_os >= EAR_OPEN_THRESHOLD,
+        "right_eye_open": image_left_open,
+        "left_eye_open": image_right_open,
     }
 
 
@@ -87,7 +118,6 @@ def _attention_from_detection(
 
     head_yaw_deg is a coarse proxy from face-centre horizontal offset;
     it is not precise gaze tracking, only head-pose attention.
-    Eye-open states are set to False here and overwritten by FaceMesh.
     """
     if not result.detections:
         return {
@@ -145,16 +175,7 @@ def _inference_loop(
         model_selection=0,
         min_detection_confidence=0.5,
     )
-    face_mesh = mp.solutions.face_mesh.FaceMesh(
-        max_num_faces=1,
-        refine_landmarks=False,
-        min_detection_confidence=0.5,
-        min_tracking_confidence=0.5,
-    )
-
     skip_counter = 0
-    mesh_counter = 0
-    last_eye_states: Dict[str, bool] = {"right_eye_open": False, "left_eye_open": False}
 
     while not stop_event.is_set():
         try:
@@ -173,14 +194,10 @@ def _inference_loop(
         detection_result = face_detection.process(frame)
         attention = _attention_from_detection(detection_result, frame_w, frame_h)
 
-        # FaceMesh — 3 Hz, only when face already detected
-        mesh_counter += 1
-        if mesh_counter % FACE_MESH_SKIP == 0 and attention["face_detected"]:
-            mesh_result = face_mesh.process(frame)
-            last_eye_states = _eye_states_from_mesh(mesh_result, frame_w, frame_h)
-
-        attention["right_eye_open"] = last_eye_states["right_eye_open"]
-        attention["left_eye_open"]  = last_eye_states["left_eye_open"]
+        if attention["face_detected"] and attention["bbox"] is not None:
+            eye_states = _eye_states_from_bbox(frame, attention["bbox"], frame_w, frame_h)
+            attention["right_eye_open"] = eye_states["right_eye_open"]
+            attention["left_eye_open"] = eye_states["left_eye_open"]
 
         try:
             attention_queue.put_nowait(attention)
@@ -192,7 +209,6 @@ def _inference_loop(
                 pass
 
     face_detection.close()
-    face_mesh.close()
 
 
 class FaceInferenceWorker:
