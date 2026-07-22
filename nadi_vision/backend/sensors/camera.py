@@ -1,246 +1,201 @@
-"""Camera capture worker using Picamera2 on top of libcamera.
+"""Camera frame consumer for the NadiVision application service.
 
-Captures XRGB8888 frames, drops the X channel, and publishes:
-- full preview frames
-- 320x240 inference frames
+Connects to the shared-memory ring and Unix-domain socket created by
+nadivision-camera.service (scripts/camera_service.py, system Python + Picamera2).
+
+Design (per Updates.md §2.2 and §2.3):
+- Three named POSIX shared-memory slots hold 320×240 RGB frames.
+- The camera service writes each sampled frame into the next slot and sends a
+  compact JSON metadata packet over a Unix-domain SOCK_SEQPACKET socket.
+- This consumer attaches to the slots once, then reads slot index from each
+  metadata packet.  One NumPy array copy is made per delivered frame — the
+  shared-memory buffer itself is never modified by the consumer.
+- OpenCV is NOT used anywhere in this module.
+- If the camera service is not running, the consumer retries silently; the
+  inference worker will produce "no face" state until frames resume.
+
+Preview JPEG is served by the camera service over HTTP/MJPEG at port 8766.
+The frontend connects to that endpoint directly — no base64 relay through the
+application WebSocket.
 """
 
 from __future__ import annotations
 
+import json
 import os
-from queue import Empty, Full, Queue
+import socket
 import threading
 import time
+from multiprocessing import Queue as MPQueue
+from multiprocessing.shared_memory import SharedMemory
 from typing import Optional
 
-import cv2
 import numpy as np
 
-from backend.config import (
-    CAMERA_FRAMERATE,
-    CAMERA_HEIGHT,
-    CAMERA_WIDTH,
-    DETECT_HEIGHT,
-    DETECT_WIDTH,
-    PREVIEW_QUALITY,
-    PREVIEW_SKIP,
-)
+from backend.scoring.constants import INFER_HEIGHT, INFER_WIDTH
 
-try:
-    from picamera2 import Picamera2
-except Exception:  # pragma: no cover
-    Picamera2 = None
+_SLOT_COUNT = 3
+_INFER_W = INFER_WIDTH
+_INFER_H = INFER_HEIGHT
+_INFER_BYTES = _INFER_W * _INFER_H * 3          # RGB888
+_UDS_PATH = "/run/nadivision/frames.sock"
+_RECONNECT_DELAY_S = 2.0
+_RECV_TIMEOUT_S = 1.0
 
 
-class CameraWorker:
-    """Background camera capture worker."""
+class SharedMemoryCameraConsumer:
+    """Reads RGB frames from the camera service via shared memory + UDS.
 
-    def __init__(self, frame_queue: Queue, *, camera_index: int = 0) -> None:
-        self._frame_queue = frame_queue
-        self._camera_index = camera_index
+    Usage::
 
-        self._stop_event = threading.Event()
-        self._thread: Optional[threading.Thread] = None
-        self._picam = None
-        self._cv_cap = None
-
-        self._preview_lock = threading.Lock()
-        self._latest_preview_jpeg: Optional[bytes] = None
-
-    def _init_camera(self) -> None:
-        if Picamera2 is not None:
-            self._picam = Picamera2()
-            cfg = self._picam.create_preview_configuration(
-                main={"size": (CAMERA_WIDTH, CAMERA_HEIGHT), "format": "RGB888"},
-                controls={"FrameRate": CAMERA_FRAMERATE},
-            )
-            self._picam.configure(cfg)
-            self._picam.start()
-            time.sleep(0.5)
-            return
-
-        self._cv_cap = cv2.VideoCapture(self._camera_index)
-        self._cv_cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
-        self._cv_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
-        self._cv_cap.set(cv2.CAP_PROP_FPS, CAMERA_FRAMERATE)
-
-    def _capture_frame(self) -> Optional[np.ndarray]:
-        if self._picam is not None:
-            frame = self._picam.capture_array()
-            if frame is None:
-                return None
-            # Picamera2 RGB888 -> convert to BGR for OpenCV and detectors.
-            return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-
-        if self._cv_cap is None:
-            return None
-        ok, frame = self._cv_cap.read()
-        if not ok:
-            return None
-        return frame
-
-    def _push_detect_frame(self, frame: np.ndarray) -> None:
-        detect_frame = cv2.resize(frame, (DETECT_WIDTH, DETECT_HEIGHT), interpolation=cv2.INTER_AREA)
-        try:
-            self._frame_queue.put_nowait(detect_frame)
-        except Full:
-            try:
-                self._frame_queue.get_nowait()
-            except Empty:
-                pass
-            try:
-                self._frame_queue.put_nowait(detect_frame)
-            except Full:
-                pass
-
-    def _update_preview(self, frame: np.ndarray, frame_idx: int) -> None:
-        if frame_idx % PREVIEW_SKIP != 0:
-            return
-        ok, encoded = cv2.imencode(
-            ".jpg",
-            frame,
-            [int(cv2.IMWRITE_JPEG_QUALITY), int(PREVIEW_QUALITY)],
-        )
-        if not ok:
-            return
-        with self._preview_lock:
-            self._latest_preview_jpeg = encoded.tobytes()
-
-    def get_latest_preview_jpeg(self) -> Optional[bytes]:
-        with self._preview_lock:
-            return self._latest_preview_jpeg
-
-    def _run(self) -> None:
-        self._init_camera()
-        frame_idx = 0
-        frame_period = 1.0 / max(1, CAMERA_FRAMERATE)
-
-        while not self._stop_event.is_set():
-            loop_start = time.monotonic()
-            frame = self._capture_frame()
-            if frame is None:
-                self._stop_event.wait(0.05)
-                continue
-
-            frame_idx += 1
-            self._push_detect_frame(frame)
-            self._update_preview(frame, frame_idx)
-
-            elapsed = time.monotonic() - loop_start
-            remaining = frame_period - elapsed
-            if remaining > 0:
-                self._stop_event.wait(remaining)
-
-    def start(self) -> None:
-        if self._thread and self._thread.is_alive():
-            return
-        self._stop_event.clear()
-        self._thread = threading.Thread(target=self._run, name="nadi-camera", daemon=True)
-        self._thread.start()
-
-    def stop(self) -> None:
-        self._stop_event.set()
-        if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=3.0)
-        if self._picam is not None:
-            try:
-                self._picam.stop()
-            except Exception:
-                pass
-            try:
-                self._picam.close()
-            except Exception:
-                pass
-        if self._cv_cap is not None:
-            self._cv_cap.release()
-
-
-class BridgeCameraWorker:
-    """Camera worker that reads externally produced JPEG frames from disk.
-
-    This mode is intended for split-interpreter deployments on Raspberry Pi:
-    - system Python (3.13) process captures frames via Picamera2
-    - backend Python (3.11) process reads those frames for MediaPipe inference
+        consumer = SharedMemoryCameraConsumer(frame_queue)
+        consumer.start()
+        # … run inference loop …
+        consumer.stop()
     """
 
-    def __init__(
-        self,
-        frame_queue: Queue,
-        *,
-        frame_path: str = "/tmp/nadi_bridge/latest.jpg",
-        poll_hz: float = 30.0,
-    ) -> None:
+    def __init__(self, frame_queue: MPQueue) -> None:
         self._frame_queue = frame_queue
-        self._frame_path = frame_path
-        self._period_s = 1.0 / max(1.0, poll_hz)
-
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
+        self._slots: list[SharedMemory] = []
 
-        self._preview_lock = threading.Lock()
-        self._latest_preview_jpeg: Optional[bytes] = None
-        self._last_mtime_ns: Optional[int] = None
+    # ------------------------------------------------------------------
+    # Shared-memory management
+    # ------------------------------------------------------------------
 
-    def _push_detect_frame(self, frame: np.ndarray) -> None:
-        detect_frame = cv2.resize(frame, (DETECT_WIDTH, DETECT_HEIGHT), interpolation=cv2.INTER_AREA)
+    def _attach_slots(self) -> bool:
+        """Attach to all named shared-memory slots created by the camera service."""
+        attached: list[SharedMemory] = []
         try:
-            self._frame_queue.put_nowait(detect_frame)
-        except Full:
+            for i in range(_SLOT_COUNT):
+                shm = SharedMemory(name=f"nadi_frame_{i}", create=False)
+                attached.append(shm)
+            self._slots = attached
+            return True
+        except Exception:
+            for s in attached:
+                try:
+                    s.close()
+                except Exception:
+                    pass
+            return False
+
+    def _detach_slots(self) -> None:
+        for shm in self._slots:
+            try:
+                shm.close()
+            except Exception:
+                pass
+        self._slots = []
+
+    # ------------------------------------------------------------------
+    # Frame queue helpers
+    # ------------------------------------------------------------------
+
+    def _push_frame(self, frame: np.ndarray) -> None:
+        """Push a frame, discarding the oldest if the queue is full (drop-oldest)."""
+        try:
+            self._frame_queue.put_nowait(frame)
+        except Exception:
             try:
                 self._frame_queue.get_nowait()
-            except Empty:
+            except Exception:
                 pass
             try:
-                self._frame_queue.put_nowait(detect_frame)
-            except Full:
-                pass
-
-    def _run(self) -> None:
-        while not self._stop_event.is_set():
-            loop_start = time.monotonic()
-            try:
-                st = os.stat(self._frame_path)
-                if self._last_mtime_ns is not None and st.st_mtime_ns == self._last_mtime_ns:
-                    self._stop_event.wait(self._period_s)
-                    continue
-                self._last_mtime_ns = st.st_mtime_ns
-
-                frame = cv2.imread(self._frame_path)
-                if frame is None:
-                    self._stop_event.wait(0.03)
-                    continue
-
-                self._push_detect_frame(frame)
-                ok, encoded = cv2.imencode(
-                    ".jpg",
-                    frame,
-                    [int(cv2.IMWRITE_JPEG_QUALITY), int(PREVIEW_QUALITY)],
-                )
-                if ok:
-                    with self._preview_lock:
-                        self._latest_preview_jpeg = encoded.tobytes()
-            except FileNotFoundError:
-                pass
+                self._frame_queue.put_nowait(frame)
             except Exception:
                 pass
 
-            elapsed = time.monotonic() - loop_start
-            remaining = self._period_s - elapsed
-            if remaining > 0:
-                self._stop_event.wait(remaining)
+    # ------------------------------------------------------------------
+    # Main worker loop
+    # ------------------------------------------------------------------
+
+    def _run(self) -> None:
+        while not self._stop_event.is_set():
+            # Wait for the camera service to create its shared-memory slots.
+            if not self._attach_slots():
+                self._stop_event.wait(_RECONNECT_DELAY_S)
+                continue
+
+            # Connect to the Unix-domain SEQPACKET socket.
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+            try:
+                sock.connect(_UDS_PATH)
+                sock.settimeout(_RECV_TIMEOUT_S)
+            except Exception:
+                sock.close()
+                self._detach_slots()
+                self._stop_event.wait(_RECONNECT_DELAY_S)
+                continue
+
+            try:
+                while not self._stop_event.is_set():
+                    try:
+                        raw = sock.recv(512)
+                    except socket.timeout:
+                        continue
+                    except Exception:
+                        break
+
+                    if not raw:
+                        break
+
+                    try:
+                        meta = json.loads(raw)
+                    except Exception:
+                        continue
+
+                    slot = int(meta.get("slot", -1))
+                    if slot < 0 or slot >= len(self._slots):
+                        continue
+
+                    # Zero-copy read: wrap shm buffer as a NumPy view, then copy
+                    # once into the queue.  The camera service may overwrite this
+                    # slot at any time, so we must copy before yielding the array.
+                    frame = np.frombuffer(
+                        self._slots[slot].buf,
+                        dtype=np.uint8,
+                        count=_INFER_BYTES,
+                    ).reshape((_INFER_H, _INFER_W, 3)).copy()
+
+                    self._push_frame(frame)
+
+            finally:
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+                self._detach_slots()
+
+            if not self._stop_event.is_set():
+                self._stop_event.wait(_RECONNECT_DELAY_S)
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
     def get_latest_preview_jpeg(self) -> Optional[bytes]:
-        with self._preview_lock:
-            return self._latest_preview_jpeg
+        """Preview JPEG is served by the camera service over HTTP/MJPEG (port 8766).
+
+        The frontend connects to http://localhost:8766/preview directly.
+        This method is kept for interface compatibility but always returns None.
+        """
+        return None
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
             return
         self._stop_event.clear()
-        self._thread = threading.Thread(target=self._run, name="nadi-camera-bridge", daemon=True)
+        self._thread = threading.Thread(
+            target=self._run,
+            name="nadi-camera-consumer",
+            daemon=True,
+        )
         self._thread.start()
 
     def stop(self) -> None:
         self._stop_event.set()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=3.0)
+        self._detach_slots()

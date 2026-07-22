@@ -30,6 +30,20 @@ class ReportGenerator:
         sessions = payload.get("sessions", [])
         rows = []
         for session in sessions:
+            # Per-line score breakdown (grouping trials by logMAR level)
+            level_scores: dict[float, dict] = {}
+            for trial in session.trials:
+                if trial.invalidated:
+                    continue
+                key = round(trial.level_logmar, 2)
+                if key not in level_scores:
+                    level_scores[key] = {"logmar": key, "correct": 0, "total": 0}
+                level_scores[key]["total"] += 1
+                if trial.correct:
+                    level_scores[key]["correct"] += 1
+
+            per_level = sorted(level_scores.values(), key=lambda x: -x["logmar"])
+
             rows.append(
                 {
                     "eye": session.eye,
@@ -42,8 +56,12 @@ class ReportGenerator:
                     "vas": session.vas,
                     "who_classification": session.who_classification,
                     "confidence_interval_95": session.confidence_interval_95,
-                    "ci_label": "screening-tier",
+                    "ci_label": "screening-tier/provisional",
                     "low_vision_category": session.low_vision_category.name if session.low_vision_category else None,
+                    "per_level_scores": per_level,
+                    "avg_distance_m": round(session.avg_distance_m, 3),
+                    "total_trials": session.total_trials,
+                    "correct_trials": session.correct_trials,
                 }
             )
 

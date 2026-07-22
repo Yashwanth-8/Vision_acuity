@@ -17,7 +17,7 @@ from backend.scoring.constants import (
     LOGMAR_CEILING,
     LOGMAR_PER_LETTER,
     LOW_VISION_DISTANCE_M,
-    TERMINATION_ERROR_THRESHOLD,
+    TERMINATION_WRONG_COUNT,
     VAS_OFFSET,
 )
 
@@ -125,6 +125,8 @@ class AcuitySession:
             0.1,
             0.0,
             -0.1,
+            -0.2,
+            -0.3,
         ]
 
         self._line_index = 0
@@ -174,13 +176,19 @@ class AcuitySession:
             self._total_correct += 1
         else:
             self._line_wrong_count += 1
+            # Terminate immediately at the third wrong answer (mid-line)
+            if self._line_wrong_count >= TERMINATION_WRONG_COUNT:
+                self._terminated = True
+                return trial
 
+        # Advance only when all five symbols on the line are completed
         if self._line_trial_count >= LETTERS_PER_LINE:
-            error_rate = self._line_wrong_count / float(LETTERS_PER_LINE)
-            if error_rate > TERMINATION_ERROR_THRESHOLD:
+            next_index = self._line_index + 1
+            if next_index >= len(self._line_logmars):
+                # Completed the final line — session finalised, never loops
                 self._terminated = True
             else:
-                self._line_index = min(self._line_index + 1, len(self._line_logmars) - 1)
+                self._line_index = next_index
                 self._line_trial_count = 0
                 self._line_wrong_count = 0
 
@@ -201,6 +209,14 @@ class AcuitySession:
 
     def should_terminate(self) -> bool:
         return self._terminated
+
+    def get_total_correct(self) -> int:
+        """Total correctly identified symbols so far (ETDRS letter score)."""
+        return self._total_correct
+
+    def get_logmar_estimate(self) -> float:
+        """Current continuous logMAR estimate based on correct letters so far."""
+        return self._numeric_logmar()
 
     def _numeric_logmar(self) -> float:
         computed = self._start_logmar - (LOGMAR_PER_LETTER * self._total_correct)

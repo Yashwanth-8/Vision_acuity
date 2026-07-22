@@ -13,7 +13,7 @@ export function optotypeHeightMm(
 ): number {
     const totalArcMin = arcMinPerStroke * E_STROKES;
     const radians = (totalArcMin * Math.PI) / (180 * 60);
-    return distanceMeters * Math.tan(radians) * 1000; // convert m to mm
+    return distanceMeters * Math.tan(radians) * 1000;
 }
 
 /**
@@ -24,43 +24,14 @@ export function mmToPx(mm: number, mmPerPx: number): number {
 }
 
 /**
- * Compute optotype height in CSS pixels for screen rendering.
- */
-export function optotypeHeightPx(
-    distanceMeters: number,
-    arcMinPerStroke: number,
-    mmPerPx: number
-): number {
-    const heightMm = optotypeHeightMm(distanceMeters, arcMinPerStroke);
-    return mmToPx(heightMm, mmPerPx);
-}
-
-/**
- * Pick a random direction.
- */
-export function randomDirection(): EDirection {
-    const dirs: EDirection[] = ["up", "down", "left", "right"];
-    return dirs[Math.floor(Math.random() * dirs.length)];
-}
-
-/**
- * Pick a random direction, avoiding consecutive repeats for better test validity.
- */
-export function smartRandomDirection(lastDirection?: EDirection): EDirection {
-    const dirs: EDirection[] = ["up", "down", "left", "right"];
-    const available = lastDirection ? dirs.filter(d => d !== lastDirection) : dirs;
-    return available[Math.floor(Math.random() * available.length)];
-}
-
-/**
  * Rotation angle (degrees) for the Tumbling E based on its facing direction.
  * The base E faces RIGHT.
  */
 export function directionToRotation(dir: EDirection): number {
     switch (dir) {
         case "right": return 0;
-        case "down": return 90;
-        case "left": return 180;
-        case "up": return 270;
+        case "down":  return 90;
+        case "left":  return 180;
+        case "up":    return 270;
     }
 }

@@ -6,11 +6,9 @@ export interface PatientInfo {
     patientId?: string;
 }
 
+// Screens that actually exist in the app
 export type AppScreen =
     | "landing"
-    | "calibration"
-    | "ipd"
-    | "mobile-calibration"
     | "camera-setup"
     | "test"
     | "results";
@@ -18,62 +16,59 @@ export type AppScreen =
 export type StabilityState = "LOCKED" | "STABILIZING" | "UNLOCKED";
 
 export type EDirection = "up" | "down" | "left" | "right";
-export type OptotypeType = "tumbling-e" | "landolt-c";
 
-export interface CheatFlag {
-    type: "fullscreen_exit" | "tab_switch" | "face_lost" | "multiple_faces" | "fast_answer" | "distance_jump";
-    timestamp: number;
-    detail?: string;
-}
-
-// LogMAR acuity levels (standard clinical progression)
+// Acuity levels for display reference (scoring is owned by the backend)
 export interface AcuityLevel {
     logMAR: number;
     snellen: string;
-    arcMinPerStroke: number; // arcminutes per stroke of the E
+    arcMinPerStroke: number;
     trialsPerLevel: number;
 }
 
-export interface TestResponse {
-    level: AcuityLevel;
-    trialIndex: number;
-    presented: EDirection;
-    answered: EDirection | null;
-    correct: boolean;
-    timestamp: number;
-    distance: number;
+// Session state received from backend via session.state message
+export interface SessionState {
+    type?: string;
+    session_status: "idle" | "active" | "complete";
+    eye?: "OD" | "OS";
+    trial_token?: string;
+    direction?: EDirection;
+    logmar?: number;
+    e_height_mm?: number;
+    total_correct?: number;
+    logmar_estimate?: number;
+    distance_m?: number | null;
+    hold: {
+        paused: boolean;
+        message: string | null;
+    };
+    attention?: {
+        face_detected: boolean;
+        num_faces: number;
+    };
 }
 
+// Final test result assembled from report.ready payload
 export interface TestResult {
     acuitySnellen: string;
     acuityLogMAR: number;
     fractionalLogMAR: number;
-    etdrsLetterScore: number;           // total correct letters (0–70), ETDRS primary metric
-    whoClassification: string;           // WHO ICD-11 visual impairment category
-    decimalVA: number;                   // 20/denominator as decimal (e.g. 1.0 for 20/20)
-    eyeTested: "OD" | "OS" | "OU";     // Right / Left / Both
+    etdrsLetterScore: number;
+    whoClassification: string;
+    decimalVA: number;
+    eyeTested: "OD" | "OS" | "OU";
     correctionStatus: "unaided" | "glasses" | "contact-lenses";
     patientInfo: PatientInfo | null;
-    ambientLightEstimate: number;        // 0–255 average luminance from camera feed
     confidenceInterval: { lower: number; upper: number; confidence: number };
-    responses: TestResponse[];
     testDistance: number;
-    testDuration: number; // ms
+    testDuration: number;
     date: string;
     perLevelScores: { level: AcuityLevel; correct: number; total: number }[];
-    cheatingFlags: CheatFlag[];
+    reportId?: string;
+    disclaimer?: string;
 }
 
 export interface CalibrationData {
-    mmPerPx: number; // physical mm per CSS pixel
+    mmPerPx: number;
     deviceLabel: string;
     calibratedAt: number;
-}
-
-export interface DistanceMeasurement {
-    raw: number; // meters
-    filtered: number; // meters (after Kalman)
-    confidence: number; // 0-1
-    method: "iris" | "ipd" | "face_width" | "fused";
-    timestamp: number;
 }

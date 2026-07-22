@@ -11,6 +11,8 @@ from typing import Callable, List, Literal, Optional
 
 from backend.scoring.constants import (
     DISTANCE_DRIFT_TOLERANCE_M,
+    DISTANCE_STABILITY_HOLD_S,
+    DISTANCE_STABILITY_WINDOW_M,
     FACE_LOSS_DEBOUNCE_S,
     FAST_ANSWER_THRESHOLD_MS,
     FELLOW_EYE_DEBOUNCE_S,
@@ -31,6 +33,8 @@ class IntegrityFlag(Enum):
     DISTANCE_FACE_MISMATCH = "distance_face_mismatch"
     SCRIPTED_TIMING_SUSPECTED = "scripted_timing_suspected"
     DISTANCE_DRIFT_MID_TRIAL = "distance_drift_mid_trial"
+    DISTANCE_UNSTABLE = "distance_unstable"
+    DISTANCE_MOVED = "distance_moved"
 
 
 @dataclass
@@ -77,11 +81,15 @@ class IntegrityMonitor:
         on_pause: Callable[[IntegrityFlag, str], None],
         on_resume: Callable[[], None],
         time_fn: Callable[[], float] | None = None,
+        fellow_eye_check_enabled: bool = False,
     ) -> None:
         self.tested_eye = tested_eye
         self._on_pause = on_pause
         self._on_resume = on_resume
         self._time_fn = time_fn or time.monotonic
+        # Fellow-eye check is disabled until a session starts.
+        # This prevents false holds on the pre-session camera-setup screen.
+        self._fellow_eye_check_enabled = fellow_eye_check_enabled
 
         self._paused = False
         self._active_pause_flags: set[IntegrityFlag] = set()
@@ -92,8 +100,13 @@ class IntegrityMonitor:
         self._gaze_timer = DebounceTimer(GAZE_OFF_DEBOUNCE_S)
         self._fellow_eye_timer = DebounceTimer(FELLOW_EYE_DEBOUNCE_S)
         self._resume_timer = DebounceTimer(RESUME_STABILITY_HOLD_S)
+        self._distance_stability_timer = DebounceTimer(DISTANCE_STABILITY_HOLD_S)
 
         self._fullscreen_ok = True
+
+        # Distance tracking
+        self._distance_anchor: Optional[float] = None
+        self._trial_start_distance: Optional[float] = None
 
         self._response_directions: List[str] = []
         self._response_times_ms: List[float] = []
@@ -101,15 +114,21 @@ class IntegrityMonitor:
 
     def _pause_message(self, flag: IntegrityFlag) -> str:
         if flag == IntegrityFlag.FACE_LOSS:
-            return "No face detected - please face the screen"
+            return "Face the screen to continue"
         if flag == IntegrityFlag.MULTIPLE_FACES:
-            return "Multiple faces detected - only the patient should be in frame"
+            return "Only one person should be in frame"
         if flag == IntegrityFlag.GAZE_OFF_SCREEN:
             return "Please look at the screen"
         if flag == IntegrityFlag.FELLOW_EYE_OPEN:
-            return "Please keep your other eye closed"
+            # Name the specific eye the patient must cover
+            fellow_side = "left" if self.tested_eye == "OD" else "right"
+            return f"Cover your {fellow_side} eye with your hand to continue"
         if flag == IntegrityFlag.FULLSCREEN_EXIT:
             return "Please return to fullscreen"
+        if flag == IntegrityFlag.DISTANCE_UNSTABLE:
+            return "Hold still while we set your test distance"
+        if flag == IntegrityFlag.DISTANCE_MOVED:
+            return "Please return to position and hold still"
         return "Integrity condition triggered"
 
     def _trigger_pause(self, flag: IntegrityFlag, now: float) -> None:
@@ -148,16 +167,63 @@ class IntegrityMonitor:
             self._clear_pause_flag(IntegrityFlag.GAZE_OFF_SCREEN)
 
         fellow_eye_open = state.left_eye_open if self.tested_eye == "OD" else state.right_eye_open
-        fellow_flag = self._fellow_eye_timer.update(fellow_eye_open, now)
-        if fellow_flag:
-            self._trigger_pause(IntegrityFlag.FELLOW_EYE_OPEN, now)
+        # Only enforce fellow-eye check once session.start has been received
+        if self._fellow_eye_check_enabled:
+            fellow_flag = self._fellow_eye_timer.update(fellow_eye_open, now)
+            if fellow_flag:
+                self._trigger_pause(IntegrityFlag.FELLOW_EYE_OPEN, now)
+            else:
+                self._clear_pause_flag(IntegrityFlag.FELLOW_EYE_OPEN)
         else:
             self._clear_pause_flag(IntegrityFlag.FELLOW_EYE_OPEN)
+            self._fellow_eye_timer.reset()
 
         self._update_resume_state(now)
 
     def update_distance(self, distance_m: float) -> None:
-        _ = distance_m
+        """Track distance stability and trial-level drift."""
+        now = self._time_fn()
+
+        # Stability gate: require distance to stay within ±WINDOW for 3 s
+        if self._distance_anchor is None:
+            self._distance_anchor = distance_m
+
+        within_window = abs(distance_m - self._distance_anchor) <= DISTANCE_STABILITY_WINDOW_M
+        if not within_window:
+            # Patient moved; reset anchor and restart stability countdown
+            self._distance_anchor = distance_m
+
+        stable = self._distance_stability_timer.update(within_window, now)
+        if not stable:
+            self._trigger_pause(IntegrityFlag.DISTANCE_UNSTABLE, now)
+        else:
+            self._clear_pause_flag(IntegrityFlag.DISTANCE_UNSTABLE)
+
+        # Trial-level drift: hold if moved beyond tolerance since trial started
+        if self._trial_start_distance is not None:
+            drifted = abs(distance_m - self._trial_start_distance) > DISTANCE_DRIFT_TOLERANCE_M
+            if drifted:
+                self._trigger_pause(IntegrityFlag.DISTANCE_MOVED, now)
+            else:
+                self._clear_pause_flag(IntegrityFlag.DISTANCE_MOVED)
+
+        self._update_resume_state(now)
+
+    def mark_trial_start_distance(self, distance_m: float) -> None:
+        """Record the distance at the start of a trial for drift detection."""
+        self._trial_start_distance = distance_m
+
+    def set_fellow_eye_check_enabled(self, enabled: bool) -> None:
+        """Enable or disable the fellow-eye occlusion hold.
+
+        Must be called with enabled=True when session.start is received, and
+        enabled=False when the session ends.  This prevents false holds on the
+        camera-setup screen before any eye side is committed.
+        """
+        self._fellow_eye_check_enabled = enabled
+        if not enabled:
+            self._fellow_eye_timer.reset()
+            self._clear_pause_flag(IntegrityFlag.FELLOW_EYE_OPEN)
 
     def check_fullscreen(self, is_fullscreen: bool) -> None:
         self._fullscreen_ok = is_fullscreen

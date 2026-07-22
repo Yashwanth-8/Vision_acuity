@@ -94,7 +94,6 @@ const features = [
 export default function LandingScreen() {
     const setScreen = useAppStore((s) => s.setScreen);
     const calibration = useAppStore((s) => s.calibration);
-    const optotypeType = useAppStore((s) => s.optotypeType);
     const eyeTested = useAppStore((s) => s.eyeTested);
     const setEyeTested = useAppStore((s) => s.setEyeTested);
     const correctionStatus = useAppStore((s) => s.correctionStatus);
@@ -103,10 +102,6 @@ export default function LandingScreen() {
     const [localGender, setLocalGender] = useState("");
 
     const handleStart = () => {
-        // Detect mobile (touch-primary device)
-        const mobile = window.matchMedia("(pointer: coarse)").matches || window.innerWidth < 768;
-        useAppStore.getState().setIsMobile(mobile);
-
         // Auto-detect screen calibration (PPI/mmPerPx)
         const detection = autoDetectScreenCalibration();
         const cal: CalibrationData = {
@@ -114,12 +109,9 @@ export default function LandingScreen() {
             deviceLabel: `${navigator.userAgent.slice(0, 40)} | ${detection.detectedPPI} PPI (${detection.method})`,
             calibratedAt: Date.now(),
         };
-
-        // Store calibration for future sessions
         useAppStore.getState().setCalibration(cal);
         localStorage.setItem("nadi-calibration", JSON.stringify(cal));
 
-        // Save optional patient demographics
         if (localAge || localGender) {
             useAppStore.getState().setPatientInfo({
                 age: localAge ? parseInt(localAge, 10) : undefined,
@@ -129,8 +121,6 @@ export default function LandingScreen() {
             useAppStore.getState().setPatientInfo(null);
         }
 
-        // Go straight to camera setup — IPD and manual calibration are not
-        // needed in hardware mode (distance comes from HC-SR04 sensor).
         setScreen("camera-setup");
     };
 
@@ -182,31 +172,16 @@ export default function LandingScreen() {
                     Powered by computer vision. No extra hardware needed.
                 </motion.p>
 
-                {/* Optotype selector */}
+                {/* Optotype: Tumbling E only (Landolt C removed from validation build) */}
                 <motion.div
                     className="flex gap-3 mb-6"
                     initial={{ opacity: 0, y: 20 }}
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ delay: 0.8, duration: 0.6 }}
                 >
-                    <button
-                        onClick={() => useAppStore.getState().setOptotypeType("tumbling-e")}
-                        className={`px-5 py-2.5 rounded-xl text-sm font-medium transition-all duration-200 cursor-pointer ${optotypeType === "tumbling-e"
-                            ? "bg-primary/20 text-primary border border-primary/40"
-                            : "bg-surface border border-white/10 text-text-secondary hover:border-white/20"
-                            }`}
-                    >
+                    <span className="px-5 py-2.5 rounded-xl text-sm font-medium bg-primary/20 text-primary border border-primary/40">
                         <span className="mr-1.5 font-bold">E</span>Tumbling E
-                    </button>
-                    <button
-                        onClick={() => useAppStore.getState().setOptotypeType("landolt-c")}
-                        className={`px-5 py-2.5 rounded-xl text-sm font-medium transition-all duration-200 cursor-pointer ${optotypeType === "landolt-c"
-                            ? "bg-primary/20 text-primary border border-primary/40"
-                            : "bg-surface border border-white/10 text-text-secondary hover:border-white/20"
-                            }`}
-                    >
-                        <span className="mr-1.5 font-bold">C</span>Landolt C
-                    </button>
+                    </span>
                 </motion.div>
 
                 {/* Clinical pre-test setup */}

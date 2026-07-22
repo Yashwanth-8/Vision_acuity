@@ -10,8 +10,8 @@ LETTERS_PER_LINE = 5
 LOW_VISION_DISTANCE_M = 1.0
 LOW_VISION_CATEGORIES = ["CF", "HM", "LP", "NLP"]
 
-# Termination
-TERMINATION_ERROR_THRESHOLD = 0.6
+# Termination — third wrong answer on a line ends the session immediately
+TERMINATION_WRONG_COUNT = 3
 
 # Distance sensor
 EMA_ALPHA = 0.7
@@ -22,33 +22,36 @@ SENSOR_TO_SCREEN_OFFSET_M = 0.0
 SENSOR_TO_EYE_OFFSET_M = 0.013
 
 # Vision and attention — MediaPipe FaceDetection (model_selection=0)
-# At 30fps camera, FRAME_SKIP=4 → ~7.5Hz inference (avg 13.8ms, p95 18.9ms on Pi 4)
-# Can safely lower to 2 (15Hz) if responsiveness needs improve; benchmark headroom exists.
-FACE_DETECT_FRAME_SKIP = 4
-DETECT_WIDTH = 320
-DETECT_HEIGHT = 240
+# Camera service delivers frames at 6 Hz (every 5th of 30 fps captured frames).
+# The inference loop processes every received frame, so FRAME_SKIP = 1.
+# FaceMesh for eye-state detection runs at 3 Hz (every 2nd inference frame).
+FACE_DETECT_FRAME_SKIP = 1
+FACE_MESH_SKIP = 2            # run FaceMesh on every 2nd inference frame → 3 Hz
+
+# Inference frame dimensions (must match camera_service.py NADI_INFER_W/H defaults)
+INFER_WIDTH = 320
+INFER_HEIGHT = 240
+
+# Eye Aspect Ratio threshold for open/closed detection (MediaPipe Face Mesh)
+# EAR < EAR_CLOSED_THRESHOLD → eye is closed / covered
+# EAR >= EAR_OPEN_THRESHOLD  → eye is visibly open
+EAR_OPEN_THRESHOLD = 0.22
+
+# Distance stability
+DISTANCE_STABILITY_WINDOW_M = 0.05   # ±5 cm window for stable-hold timer
+DISTANCE_STABILITY_HOLD_S = 3.0      # seconds of stable distance required to unlock
 
 # Debounce thresholds
 FACE_LOSS_DEBOUNCE_S = 2.0
 GAZE_OFF_DEBOUNCE_S = 1.0
-FELLOW_EYE_DEBOUNCE_S = 0.5
+# Fellow-eye hold requires 3 consecutive FaceMesh detections at 3 Hz → 1.0 s
+FELLOW_EYE_DEBOUNCE_S = 1.0
 GAZE_YAW_THRESHOLD_DEG = 20.0
 
 # Response timing
 FAST_ANSWER_THRESHOLD_MS = 300
 RESUME_STABILITY_HOLD_S = 1.5
 DISTANCE_DRIFT_TOLERANCE_M = 0.03
-
-# Ambient light thresholds
-AMBIENT_LIGHT_MIN = 80
-AMBIENT_LIGHT_MAX = 220
-
-# Camera defaults
-CAMERA_WIDTH = 1280
-CAMERA_HEIGHT = 720
-CAMERA_FRAMERATE = 30
-PREVIEW_QUALITY = 65
-PREVIEW_SKIP = 3
 
 # WebSocket defaults
 WS_HOST = "0.0.0.0"

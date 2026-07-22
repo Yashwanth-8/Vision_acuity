@@ -1,10 +1,10 @@
 """Main entry point for Nadi Vision backend process orchestration.
 
 This module is the sole owner of subsystem startup/shutdown:
+- Shared-memory camera consumer (attaches to nadivision-camera.service)
 - Ultrasonic thread
-- Camera thread
 - Vision inference process
-- Integrity monitor task
+- Integrity monitor task (owned by WSServer)
 - WebSocket server
 """
 
@@ -12,8 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import multiprocessing
-import os
-from queue import Queue
 import signal
 import threading
 
@@ -24,10 +22,11 @@ from backend.config import (
     FRAME_QUEUE_MAXSIZE,
     INTEGRITY_QUEUE_MAXSIZE,
 )
-from backend.sensors.camera import BridgeCameraWorker, CameraWorker
+from backend.sensors.camera import SharedMemoryCameraConsumer
 from backend.sensors.ultrasonic import UltrasonicWorker
 from backend.server.ws_server import WSServer
 from backend.vision.face_detection import FaceInferenceWorker
+from queue import Queue
 
 
 async def _run_backend() -> None:
@@ -38,21 +37,12 @@ async def _run_backend() -> None:
     distance_queue: Queue = Queue(maxsize=DISTANCE_QUEUE_MAXSIZE)
     integrity_queue: Queue = Queue(maxsize=INTEGRITY_QUEUE_MAXSIZE)
 
-    # Multiprocessing queues are required between camera thread and inference process.
+    # Multiprocessing queues are required between camera consumer thread and
+    # the inference subprocess.
     frame_queue: multiprocessing.Queue = multiprocessing.Queue(maxsize=FRAME_QUEUE_MAXSIZE)
     attention_queue: multiprocessing.Queue = multiprocessing.Queue(maxsize=ATTENTION_QUEUE_MAXSIZE)
 
-    camera_mode = os.getenv("NADI_CAMERA_MODE", "native").strip().lower()
-    if camera_mode == "bridge":
-        bridge_path = os.getenv("NADI_BRIDGE_FRAME_PATH", "/tmp/nadi_bridge/latest.jpg")
-        bridge_hz = float(os.getenv("NADI_BRIDGE_POLL_HZ", "30"))
-        camera_worker = BridgeCameraWorker(
-            frame_queue=frame_queue,
-            frame_path=bridge_path,
-            poll_hz=bridge_hz,
-        )
-    else:
-        camera_worker = CameraWorker(frame_queue=frame_queue)
+    camera_consumer = SharedMemoryCameraConsumer(frame_queue=frame_queue)
     ultrasonic_worker = UltrasonicWorker(distance_queue=distance_queue)
     inference_worker = FaceInferenceWorker(
         frame_queue=frame_queue,
@@ -65,7 +55,6 @@ async def _run_backend() -> None:
         distance_queue=distance_queue,
         attention_queue=attention_queue,
         integrity_queue=integrity_queue,
-        preview_provider=camera_worker.get_latest_preview_jpeg,
     )
 
     def _on_signal(*_: object) -> None:
@@ -79,7 +68,7 @@ async def _run_backend() -> None:
             signal.signal(sig, lambda *_args: _on_signal())
 
     ultrasonic_worker.start()
-    camera_worker.start()
+    camera_consumer.start()
     inference_worker.start()
     await ws_server.start()
 
@@ -89,7 +78,7 @@ async def _run_backend() -> None:
     finally:
         await ws_server.stop()
         inference_worker.stop()
-        camera_worker.stop()
+        camera_consumer.stop()
         ultrasonic_worker.stop()
 
 

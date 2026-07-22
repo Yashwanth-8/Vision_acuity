@@ -51,13 +51,8 @@ export default function ResultsScreen() {
     const distCorrApplied = Math.abs(testResult.testDistance - stdDistM) > 0.05;
     const distCorrLogMAR = Math.log10(stdDistM) - Math.log10(Math.max(testResult.testDistance, 0.1));
 
-    // Ambient light label
-    // In Pi hardware mode the browser has no local camera, so the canvas
-    // sampling returns 0 — display "Not measured" rather than "Low".
-    const ambientLabel =
-        testResult.ambientLightEstimate === 0 ? "Not measured" :
-            testResult.ambientLightEstimate < 60 ? "Low" :
-                testResult.ambientLightEstimate < 160 ? "Adequate" : "Bright";
+    // Ambient light — not available in backend-driven mode
+    const ambientLabel = "Not measured";
 
     // Correction status label
     const correctionLabel =
@@ -151,11 +146,9 @@ export default function ResultsScreen() {
             }
             rule();
 
-            // Ambient light
             doc.setFontSize(10);
             doc.setTextColor(120, 120, 120);
-            doc.text("Ambient Light (camera estimate): " + ambientLabel + " (lum \u2248 " + testResult.ambientLightEstimate + "/255)", 20, y); y += 6;
-            doc.text("Note: Clinical standard requires 80\u2013320 cd/m\u00b2 chart illumination.", 20, y); y += 10;
+            doc.text("Ambient Light: Not measured (backend-driven session)", 20, y); y += 10;
 
             // Footer
             doc.setFontSize(8);
@@ -279,7 +272,7 @@ export default function ResultsScreen() {
                         </div>
                         <div className="text-center">
                             <p className="text-text-muted">Trials</p>
-                            <p className="font-mono">{testResult.responses.length}</p>
+                            <p className="font-mono">{testResult.perLevelScores.reduce((s, r) => s + r.total, 0)}</p>
                         </div>
                         <div className="text-center">
                             <p className="text-text-muted">Ambient</p>
@@ -350,39 +343,7 @@ export default function ResultsScreen() {
                     </div>
                 </motion.div>
 
-                {/* Test integrity alerts */}
-                {(testResult.cheatingFlags?.length ?? 0) > 0 && (
-                    <motion.div
-                        className="glass rounded-2xl p-5 w-full mb-6 border border-warning/20"
-                        initial={{ opacity: 0, y: 20 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        transition={{ delay: 1.3 }}
-                    >
-                        <h3 className="text-sm font-medium text-warning mb-3 uppercase tracking-wide flex items-center gap-2">
-                            <span>⚠</span> Test Integrity Alerts
-                        </h3>
-                        <div className="space-y-1.5">
-                            {testResult.cheatingFlags.map((flag, i) => {
-                                const labels: Record<string, string> = {
-                                    fullscreen_exit: "Exited fullscreen",
-                                    tab_switch: "Switched away from tab",
-                                    face_lost: "Face left camera view",
-                                    multiple_faces: "Multiple faces detected",
-                                    fast_answer: "Unusually fast response",
-                                    distance_jump: "Sudden distance change",
-                                };
-                                return (
-                                    <div key={i} className="flex items-center justify-between text-xs">
-                                        <span className="text-warning/80">{labels[flag.type] ?? flag.type}</span>
-                                        <span className="text-text-muted font-mono">
-                                            {flag.detail ? `${flag.detail} · ` : ""}{new Date(flag.timestamp).toLocaleTimeString()}
-                                        </span>
-                                    </div>
-                                );
-                            })}
-                        </div>
-                    </motion.div>
-                )}
+                {/* Test integrity — no legacy cheatingFlags; backend reports integrity events */}
 
                 {/* Action buttons */}
                 <motion.div

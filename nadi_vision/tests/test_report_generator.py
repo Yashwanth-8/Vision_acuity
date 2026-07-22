@@ -44,4 +44,4 @@ def test_od_os_ucva_bcva_rows_render_distinct() -> None:
     assert (rows[1]["eye"], rows[1]["correction"]) == ("OD", "BCVA")
     assert (rows[2]["eye"], rows[2]["correction"]) == ("OS", "UCVA")
     assert (rows[3]["eye"], rows[3]["correction"]) == ("OS", "BCVA")
-    assert all(row["ci_label"] == "screening-tier" for row in rows)
+    assert all(row["ci_label"] == "screening-tier/provisional" for row in rows)
